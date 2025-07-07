@@ -2289,9 +2289,11 @@ const fetchLectures = async () => {
                                     size="icon"
                                     className="h-14 w-14 bg-green-500 hover:bg-green-600 text-white rounded-2xl"
                                     onClick={() => setShowSessionList(true)}
+                                    title="Start Practice Session - Start a quiz or practice session with generated questions"
                                   >
                                     <Play className="h-7 w-7" />
                                   </Button>
+                                  {/* Custom tooltip */}
                                   <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
                                     Start Practice Session
                                   </div>
@@ -2303,6 +2305,7 @@ const fetchLectures = async () => {
                                   lectures={lectures.map(l => ({ ...l, id: String(l.lectureId) }))}
                                   onLectureSelect={handleLectureSelect}
                                 />
+                                {/* Custom tooltip */}
                                 <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
                                   Study Materials
                                 </div>
@@ -2314,9 +2317,11 @@ const fetchLectures = async () => {
                                   variant="outline"
                                   className="h-14 w-14 border-2 border-purple-400/50 text-purple-600 hover:bg-purple-50 hover:border-purple-500 rounded-2xl"
                                   onClick={() => toggleTab('timer')}
+                                  title="Study Timer - Set and manage focus timer for study sessions"
                                 >
                                   <Timer className="h-7 w-7" />
                                 </Button>
+                                {/* Custom tooltip */}
                                 <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
                                   Study Timer
                                 </div>
@@ -2330,11 +2335,13 @@ const fetchLectures = async () => {
                                     variant="outline"
                                     className="h-14 w-14 border-2 border-amber-400/50 text-amber-600 hover:bg-amber-50 hover:border-amber-500 rounded-2xl"
                                     onClick={handleOpenStudyGoal}
+                                    title="Study Goal - Set daily study hour goal for the session"
                                   >
                                     <Target className="h-7 w-7" />
                                   </Button>
+                                  {/* Custom tooltip */}
                                   <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                    Study Hours Goal
+                                    Study Goal
                                   </div>
                                 </div>
                               )}
@@ -2348,6 +2355,7 @@ const fetchLectures = async () => {
                                     className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
                                     onClick={() => setShowUploadModal(true)}
                                     disabled={isGenerating}
+                                    title="Upload PDF - Upload PDF files to generate study materials and practice questions"
                                   >
                                     {isGenerating ? (
                                       <div className="animate-spin h-7 w-7 border-2 border-blue-600 border-t-transparent rounded-full" />
@@ -2355,6 +2363,7 @@ const fetchLectures = async () => {
                                       <Upload className="h-7 w-7" />
                                     )}
                                   </Button>
+                                  {/* Custom tooltip */}
                                   <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
                                     Upload PDF
                                   </div>
@@ -2388,6 +2397,7 @@ const fetchLectures = async () => {
                                     className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
                                     onClick={setNewHost}
                                     disabled={isRequestingHost}
+                                    title="Request Host - Request to become the host of this study session"
                                   >
                                     {isRequestingHost ? (
                                       <div className="h-7 w-7">...</div>
@@ -2395,6 +2405,7 @@ const fetchLectures = async () => {
                                       <Crown className="h-7 w-7" />
                                     )}
                                   </Button>
+                                  {/* Custom tooltip */}
                                   <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
                                     Request Host
                                   </div>
@@ -2408,9 +2419,11 @@ const fetchLectures = async () => {
                                   variant="destructive"
                                   className="h-14 w-14 bg-red-500 hover:bg-red-600 rounded-2xl"
                                   onClick={handleLeaveRoom}
+                                  title="Leave Session - Exit the current study session"
                                 >
                                   <LogOut className="h-7 w-7" />
                                 </Button>
+                                {/* Custom tooltip */}
                                 <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
                                   Leave Session
                                 </div>
