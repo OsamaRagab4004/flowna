@@ -189,7 +189,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
    
   };
- //#region SessionSelect
+
   const handleSessionSelect = (sessionId: string) => {
     console.log("🎮 [SESSION_SELECT] Session selected:", sessionId);
     
@@ -209,7 +209,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
     // Close the session list
     setShowSessionList(false);
-// #region Schedule
+
     // add exam to Scheduler and trigger event for other users to open exam
     const res = fetch(getApiUrl("api/v1/scheduler/schedule"), 
       {
@@ -297,7 +297,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
 
   // Study Stats state variables  
-  //#region StudyStats
+ 
   const [studyTimeMinutes, setStudyTimeMinutes] = useState(0) // Demo: 3 hours
   const [practiceTimeMinutes, setPracticeTimeMinutes] = useState(0) // Demo: 2 hours
   const [sessionGoalHours, setSessionGoalHours] = useState(0) // Default: 0 hours
@@ -702,7 +702,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
 
   
-//#region RoomHandler
   const handleRoomMessage = useCallback(
     (message: { body: any }) => {
       try {
@@ -735,7 +734,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
           localStorage.setItem(`sessionGoal_${roomCode}`, JSON.stringify(response.payload))
         }
 
-        //#region ExamStarted
         if(response.eventType === "EXAM_STARTED") {
           const collectorId = response.payload;
           leaveRoom(); // Leave the room before opening exam page
@@ -1097,7 +1095,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       })
       
       setUploadSuccess(true)
-      //#region SummaryMCQS Generation
       // Generate content based on type
       if (type === 'summary') {
         return generateSummary(mimeType, uri, summarySettings!, filename);
@@ -1122,7 +1119,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   
 
 
-//#region ContentGeneration
   const generateSummary = (mimeType: string, uri: string, settings: SummarySettings, filename: string): Question[] => {
     console.log("mimeType:", mimeType);
     console.log("uri:", uri);
@@ -1394,7 +1390,6 @@ const fetchLectures = async () => {
     const data = await res.json();
     setLectures(data);
   }
- //#region SessionsFetch
   const fetchSessions = async () => {
     
     if (!user || !roomCode) {
