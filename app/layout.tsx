@@ -40,7 +40,7 @@ export default function RootLayout({
           <AuthProvider>
             <GameProvider>
               <WebSocketProvider>
-                <GoogleOAuthProvider clientId={"551641067796-cl10gebrlo6f8k1d0mvh765f03i8315q.apps.googleusercontent.com"}>
+                <GoogleOAuthProvider clientId={process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!}>
                   <StompProvider>
                     {children}
                     <Toaster />
