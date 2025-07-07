@@ -28,21 +28,12 @@ import "@/styles/strategic-mind.css"; // Import the new CSS file
 import { LectureList } from "@/components/lecture-list";
 import { SessionList } from "@/components/session-list";
 import { getApiUrl } from '@/lib/api';
-import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip"
 
 export default function Lobby({ params }: { params: Promise<{ roomCode: string }> }) {
   const router = useRouter()
   const { toast } = useToast()
   const { roomCode } = use(params)
-  const [isHost, setIsHost] = useState(() => {
-    // Initialize from localStorage if available
-    if (typeof window !== "undefined") {
-      const savedHostStatus = localStorage.getItem(`isHost_${roomCode}`);
-      return savedHostStatus === 'true';
-    }
-    return false;
-  })
-  const [hostStatusReceived, setHostStatusReceived] = useState(false) // Track if we've received host status from server
+  const [isHost, setIsHost] = useState(false)
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [questionsGenerated, setQuestionsGenerated] = useState(false)
@@ -269,34 +260,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const [typingUsers, setTypingUsers] = useState<string[]>([]) // Array of users currently typing
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Timeout for clearing typing status
 
-  // Computed value for showing host buttons - more resilient to race conditions
-  const showHostButtons = useMemo(() => {
-    // Always show if definitively host
-    if (isHost) return true;
-    
-    // Show if we're the only player and haven't received definitive host status yet
-    if (!hostStatusReceived && players.length <= 1 && user) return true;
-    
-    // Show if localStorage indicates we're host (for page reload scenarios)
-    if (typeof window !== "undefined" && !hostStatusReceived) {
-      const savedHostStatus = localStorage.getItem(`isHost_${roomCode}`);
-      if (savedHostStatus === 'true') return true;
-    }
-    
-    return false;
-  }, [isHost, hostStatusReceived, players.length, user, roomCode]);
-
-  // Debug effect for showHostButtons
-  useEffect(() => {
-    console.log("🔧 [HOST_BUTTONS] Show host buttons state:", {
-      showHostButtons,
-      isHost,
-      hostStatusReceived,
-      playersLength: players.length,
-      hasUser: !!user,
-      localStorageHost: typeof window !== "undefined" ? localStorage.getItem(`isHost_${roomCode}`) : null
-    });
-  }, [showHostButtons, isHost, hostStatusReceived, players.length, user, roomCode]);
 
 
   // Debug: Log typing users changes - only in development
@@ -666,45 +629,18 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const fetchRoomMembers = useCallback(() => {
     if (stompClient && stompClient.connected && roomCode) {
       console.log("📡 [FETCH_MEMBERS] Sending room members request", { roomCode, connected: stompClient.connected });
-      try {
-        stompClient.publish({
-          destination: "/app/room-members",
-          body: JSON.stringify({ roomJoinCode: roomCode }),
-        });
-        
-        // Set a timeout to handle no response (network issues in deployment)
-        setTimeout(() => {
-          if (players.length === 0 && roomLoading) {
-            console.warn("⚠️ [FETCH_MEMBERS] No response after 10 seconds, stopping loading state");
-            setRoomLoading(false);
-            // Try to force fetch one more time
-            if (stompClient?.connected) {
-              console.log("🔄 [FETCH_MEMBERS] Retrying room members request");
-              stompClient.publish({
-                destination: "/app/room-members", 
-                body: JSON.stringify({ roomJoinCode: roomCode }),
-              });
-            }
-          }
-        }, 10000); // 10 second timeout
-        
-      } catch (error) {
-        console.error("❌ [FETCH_MEMBERS] Error sending request:", error);
-        setRoomLoading(false);
-      }
+      stompClient.publish({
+        destination: "/app/room-members",
+        body: JSON.stringify({ roomJoinCode: roomCode }),
+      })
     } else {
       console.warn("⚠️ [FETCH_MEMBERS] Cannot fetch room members:", {
         hasStompClient: !!stompClient,
         isConnected: stompClient?.connected,
         hasRoomCode: !!roomCode
       });
-      // Don't stay in loading state if STOMP is not ready
-      if (!stompClient?.connected) {
-        console.log("🔄 [FETCH_MEMBERS] STOMP not connected, stopping loading state");
-        setRoomLoading(false);
-      }
     }
-  }, [stompClient, roomCode, players.length, roomLoading])
+  }, [stompClient, roomCode])
 
 
   const fetchRoomMessages = useCallback(() => {
@@ -772,73 +708,25 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         const response = JSON.parse(message.body)
         
          if (response.eventType === "ROOM_MEMBERS_LIST") {
-          console.log("📥 [ROOM_MEMBERS_LIST] Received room members from server:", response.payload);
-          console.log("📥 [ROOM_MEMBERS_LIST] Current user details:", { 
-            userName: user?.name
-          });
-          
           fetchRoomMessages();
           getGoalsFromServer();
           setRoomGoalStudyHours();
+          fetchDiscordLink();
           fetchLectures();
           fetchSessions();
           updateRoomStats();
 
           const newPlayers = Array.isArray(response.payload) ? response.payload : [];
-          
-          // Detailed logging of each player
-          console.log("📥 [ROOM_MEMBERS_LIST] Detailed player analysis:");
-          newPlayers.forEach((player: any, index: number) => {
-            console.log(`Player ${index + 1}:`, {
-              username: player.username,
-              email: player.email,
-              host: player.host,
-              isCurrentUser: player.username === user?.name,
-              rawPlayer: player
-            });
-          });
         
           setPlayers(newPlayers);
           setRoomLoading(false); // Mark room data as loaded after first fetch
-          
-          // Force update host status immediately when we get new player data
-          if (user && user.name && newPlayers.length > 0) {
-            // Try multiple ways to match the current user
-            const currentUserIsHost = newPlayers.some((player: any) => {
-              const isMatchByUsername = player.host && player.username === user.name;
-              return isMatchByUsername;
-            });
-            
-            // If no host found and user is the only player, make them host
-            const noHostExists = !newPlayers.some((player: any) => player.host);
-            const shouldBeHost = currentUserIsHost || (noHostExists && newPlayers.length === 1);
-            
-            console.log("🎯 [ROOM_MEMBERS_LIST] Host status analysis:", {
-              user: user.name,
-              currentUserIsHost,
-              noHostExists,
-              shouldBeHost,
-              playersWithHost: newPlayers.filter((p: any) => p.host),
-              allPlayers: newPlayers.map((p: any) => ({ username: p.username, host: p.host }))
-            });
-            
-            setIsHost(shouldBeHost);
-            setStoredIsHost(shouldBeHost);
-            setHostStatusReceived(true); // Mark that we've received host status
-            
-            // Save to localStorage
-            if (typeof window !== "undefined") {
-              localStorage.setItem(`isHost_${roomCode}`, String(shouldBeHost));
-            }
-            
-            // If we determined the user should be host but server doesn't show them as host, 
-            // try to set them as host on the server
-            if (shouldBeHost && !currentUserIsHost && noHostExists) {
-              console.log("🔧 [ROOM_MEMBERS_LIST] User should be host but server doesn't show them as host, attempting to set host status");
-              setTimeout(() => {
-                setNewHost(); // This will call the set host API
-              }, 1000);
-            }
+          // Directly update host status here when we get new player data
+          if (user && user.name) {
+            const currentUserIsHost = newPlayers.some(
+              (player: any) => player.host && player.username === user.name
+            );
+            setIsHost(currentUserIsHost);
+            setStoredIsHost(currentUserIsHost);
           }
         } 
          if (response.eventType === "SET_ROOM_HOURS_GOAL") {
@@ -963,11 +851,13 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
   // Effect to update host status whenever players or user changes
   useEffect(() => {
-    console.log(`[Host Effect] Checking host status. Loading: ${loading}, User: ${user?.name}, Players: ${players.length}, HostStatusReceived: ${hostStatusReceived}`);
+    console.log(`[Host Effect] Checking host status. Loading: ${loading}, User: ${user?.name}, Players: ${players.length}`);
     
     if (loading || !user) {
-      console.log(`[Host Effect] User not ready, keeping current isHost status`);
-      return; // Don't reset isHost until user is ready
+      console.log(`[Host Effect] User not ready, setting isHost to false`);
+      setIsHost(false);
+      setStoredIsHost(false);
+      return;
     }
     
     // Check host status from players array
@@ -975,78 +865,15 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       const currentUserIsHost = players.some(
         (player: any) => player.host && player.username === user.name
       );
-      
-      // Use the same logic as ROOM_MEMBERS_LIST handler - if no host exists and user is the only player, make them host
-      const noHostExists = !players.some((player: any) => player.host);
-      const shouldBeHost = currentUserIsHost || (noHostExists && players.length === 1);
-      
-      console.log(`[Host Effect] User: ${user.name}, currentUserIsHost: ${currentUserIsHost}, noHostExists: ${noHostExists}, shouldBeHost: ${shouldBeHost}`, players);
-      setIsHost(shouldBeHost);
-      setStoredIsHost(shouldBeHost);
-      setHostStatusReceived(true); // Mark that we've received host status from server
-      
-      // Save to localStorage for persistence across page reloads
-      if (typeof window !== "undefined") {
-        localStorage.setItem(`isHost_${roomCode}`, String(shouldBeHost));
-      }
-      
-      // If we determined the user should be host but server doesn't show them as host, 
-      // try to set them as host on the server
-      if (shouldBeHost && !currentUserIsHost && noHostExists) {
-        console.log("🔧 [Host Effect] User should be host but server doesn't show them as host, attempting to set host status");
-        setTimeout(() => {
-          setNewHost(); // This will call the set host API
-        }, 1000);
-      }
-    } else if (hostStatusReceived) {
-      // Only reset to false if we've previously received host status from server
-      // This prevents the race condition on initial load
-      console.log(`[Host Effect] No players data but host status was previously received, setting isHost to false`);
+      console.log(`[Host Effect] User: ${user.name}, IsHost: ${currentUserIsHost}`, players);
+      setIsHost(currentUserIsHost);
+      setStoredIsHost(currentUserIsHost);
+    } else {
+      console.log(`[Host Effect] No players data, setting isHost to false`);
       setIsHost(false);
       setStoredIsHost(false);
-      if (typeof window !== "undefined") {
-        localStorage.setItem(`isHost_${roomCode}`, 'false');
-      }
-    } else {
-      console.log(`[Host Effect] No players data and no host status received yet, keeping current isHost status`);
     }
-  }, [players, user, loading, hostStatusReceived, roomCode]); // Include hostStatusReceived and roomCode in dependencies
-
-  // Debug effect to track host status changes
-  useEffect(() => {
-    console.log("🔍 [HOST_DEBUG] Host status state changed:", {
-      isHost,
-      hostStatusReceived,
-      loading,
-      user: user?.name,
-      playersCount: players.length,
-      hasUser: !!user,
-      timestamp: new Date().toISOString()
-    });
-  }, [isHost, hostStatusReceived, loading, user, players.length]);
-
-  // Fallback mechanism: If we're the only player and no host status received after 5 seconds, assume we're host
-  useEffect(() => {
-    if (!loading && user && players.length === 1 && !hostStatusReceived && !isHost) {
-      const fallbackTimer = setTimeout(() => {
-        if (players.length === 1 && !hostStatusReceived) {
-          console.log("🎯 [HOST_FALLBACK] Only player in room and no host status received, assuming host status");
-          setIsHost(true);
-          setStoredIsHost(true);
-          setHostStatusReceived(true);
-          if (typeof window !== "undefined") {
-            localStorage.setItem(`isHost_${roomCode}`, 'true');
-          }
-          toast({
-            title: "Host Status",
-            description: "You are now the host of this room",
-          });
-        }
-      }, 5000); // Wait 5 seconds
-
-      return () => clearTimeout(fallbackTimer);
-    }
-  }, [loading, user, players.length, hostStatusReceived, isHost, roomCode, toast]);
+  }, [players, user, loading]); // Include players in dependencies
 
   useEffect(() => {
     if (loading || !user || !roomCode || !stompClient) {
@@ -1120,22 +947,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       }
     }
   }, [stompClient?.connected, roomCode, user, loading, players.length, roomLoading, fetchRoomMembers])
-
-  // Force immediate room member fetching when STOMP becomes available
-  useEffect(() => {
-    if (stompClient?.connected && user && roomCode && players.length === 0) {
-      console.log("🚀 [FORCE_FETCH] STOMP connected and no players - force fetching immediately");
-      
-      // Add a small delay to ensure STOMP is fully ready
-      const immediateTimer = setTimeout(() => {
-        if (stompClient?.connected) {
-          fetchRoomMembers();
-        }
-      }, 100);
-      
-      return () => clearTimeout(immediateTimer);
-    }
-  }, [stompClient?.connected, user, roomCode, players.length, fetchRoomMembers]);
 
   // Check for page reload and show alert using sessionStorage
   useEffect(() => {
@@ -2234,6 +2045,8 @@ const fetchLectures = async () => {
       done: false
     }
     
+    
+    
     const res = fetch(getApiUrl("api/v1/squadgames/rooms/goals/add"), {
       method: "POST",
       headers: {
@@ -2243,7 +2056,7 @@ const fetchLectures = async () => {
       body: JSON.stringify(goalRequestBody)
     })
     
-    res.then(async (response: any) => {
+    res.then(async response => {
       if (response.ok) {
         const data = await response.json();
         console.log("✅ [ADD_GOAL] Goal added successfully:", data)
@@ -2263,7 +2076,7 @@ const fetchLectures = async () => {
           variant: "destructive"
         })
       }
-    }).catch((error: any) => {
+    }).catch(error => {
       console.error("❌ [ADD_GOAL] Network error:", error)
       toast({
         title: "Error",
@@ -2424,7 +2237,7 @@ const fetchLectures = async () => {
                             <div className="space-y-2">
                               <div className="flex items-center gap-2 mb-2">
                                 <Users className="h-5 w-5 text-blue-500" />
-                                <h3 className="font-semibold">Participants ({players.length}/8)</h3>
+                                <h3 className="font-semibold">Participants ({players.length})</h3>
                               </div>
                               <PlayerList players={players} currentUsername={username} />
                             </div>
@@ -2467,143 +2280,145 @@ const fetchLectures = async () => {
                             <CardDescription className="text-lg text-gray-600">Control your study session</CardDescription>
                           </CardHeader>
                           <CardContent className="space-y-6 p-8">
-                            <TooltipProvider delayDuration={0}>
-                              <div className="flex flex-wrap gap-4 justify-center pt-6">
-                                {/* Start Session Button - Only for Host */}
-                                {showHostButtons && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        size="icon"
-                                        className="h-14 w-14 bg-green-500 hover:bg-green-600 text-white rounded-2xl"
-                                        onClick={() => setShowSessionList(true)}
-                                      >
-                                        <Play className="h-7 w-7" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Start Session</TooltipContent>
-                                  </Tooltip>
-                                )}
+                            {/* Modern Action Buttons Row */}
+                            <div className="flex flex-wrap gap-4 justify-center pt-6">
+                              {/* Start Session Button - Only for Host */}
+                              {isHost && (
+                                <div className="relative group">
+                                  <Button
+                                    size="icon"
+                                    className="h-14 w-14 bg-green-500 hover:bg-green-600 text-white rounded-2xl"
+                                    onClick={() => setShowSessionList(true)}
+                                  >
+                                    <Play className="h-7 w-7" />
+                                  </Button>
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Start Practice Session
+                                  </div>
+                                </div>
+                              )}
 
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <div>
-                                      <LectureList
-                                        lectures={lectures.map(l => ({ ...l, id: String(l.lectureId) }))}
-                                        onLectureSelect={handleLectureSelect}
-                                      />
-                                    </div>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Lectures</TooltipContent>
-                                </Tooltip>
-
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      size="icon"
-                                      variant="outline"
-                                      className="h-14 w-14 border-2 border-purple-400/50 text-purple-600 hover:bg-purple-50 hover:border-purple-500 rounded-2xl"
-                                      onClick={() => toggleTab('timer')}
-                                    >
-                                      <Timer className="h-7 w-7" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Timer</TooltipContent>
-                                </Tooltip>
-
-                                {/* Study Goal Button */}
-                                {showHostButtons && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        size="icon"
-                                        variant="outline"
-                                        className="h-14 w-14 border-2 border-amber-400/50 text-amber-600 hover:bg-amber-50 hover:border-amber-500 rounded-2xl"
-                                        onClick={handleOpenStudyGoal}
-                                      >
-                                        <Target className="h-7 w-7" />
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Set Study Goal</TooltipContent>
-                                  </Tooltip>
-                                )}
-
-                                {/* Upload Material Button */}
-                                {showHostButtons && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        size="icon"
-                                        variant="outline"
-                                        className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
-                                        onClick={() => setShowUploadModal(true)}
-                                        disabled={isGenerating}
-                                      >
-                                        {isGenerating ? (
-                                          <div className="animate-spin h-7 w-7 border-2 border-blue-600 border-t-transparent rounded-full" />
-                                        ) : (
-                                          <Upload className="h-7 w-7" />
-                                        )}
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Upload Material</TooltipContent>
-                                  </Tooltip>
-                                )}
-
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <div>
-                                      <DiscordLinkButton 
-                                        isHost={showHostButtons}
-                                        discordLink={discordLink}
-                                        onSave={handleDiscordLinkSave}
-                                      />
-                                    </div>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Discord Link</TooltipContent>
-                                </Tooltip>
-
-                                {/* Request Host Button - Only for Non-Host */}
-                                {!showHostButtons && !hasLeftRoom && (
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <Button
-                                        size="icon"
-                                        variant="outline"
-                                        className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
-                                        onClick={setNewHost}
-                                        disabled={isRequestingHost}
-                                      >
-                                        {isRequestingHost ? (
-                                          <div className="h-7 w-7">...</div>
-                                        ) : (
-                                          <Crown className="h-7 w-7" />
-                                        )}
-                                      </Button>
-                                    </TooltipTrigger>
-                                    <TooltipContent>Request Host</TooltipContent>
-                                  </Tooltip>
-                                )}
-
-                                {/* Leave Room Button */}
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      size="icon"
-                                      variant="destructive"
-                                      className="h-14 w-14 bg-red-500 hover:bg-red-600 rounded-2xl"
-                                      onClick={handleLeaveRoom}
-                                    >
-                                      <LogOut className="h-7 w-7" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>Leave Room</TooltipContent>
-                                </Tooltip>
+                              <div className="relative group">
+                                <LectureList
+                                  lectures={lectures.map(l => ({ ...l, id: String(l.lectureId) }))}
+                                  onLectureSelect={handleLectureSelect}
+                                />
+                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                  Study Materials
+                                </div>
                               </div>
-                            </TooltipProvider>
+
+                              <div className="relative group">
+                                <Button
+                                  size="icon"
+                                  variant="outline"
+                                  className="h-14 w-14 border-2 border-purple-400/50 text-purple-600 hover:bg-purple-50 hover:border-purple-500 rounded-2xl"
+                                  onClick={() => toggleTab('timer')}
+                                >
+                                  <Timer className="h-7 w-7" />
+                                </Button>
+                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                  Study Timer
+                                </div>
+                              </div>
+
+                              {/* Study Goal Button */}
+                              {isHost && (
+                                <div className="relative group">
+                                  <Button
+                                    size="icon"
+                                    variant="outline"
+                                    className="h-14 w-14 border-2 border-amber-400/50 text-amber-600 hover:bg-amber-50 hover:border-amber-500 rounded-2xl"
+                                    onClick={handleOpenStudyGoal}
+                                  >
+                                    <Target className="h-7 w-7" />
+                                  </Button>
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Study Hours Goal
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Upload Material Button */}
+                              {isHost && (
+                                <div className="relative group">
+                                  <Button
+                                    size="icon"
+                                    variant="outline"
+                                    className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
+                                    onClick={() => setShowUploadModal(true)}
+                                    disabled={isGenerating}
+                                  >
+                                    {isGenerating ? (
+                                      <div className="animate-spin h-7 w-7 border-2 border-blue-600 border-t-transparent rounded-full" />
+                                    ) : (
+                                      <Upload className="h-7 w-7" />
+                                    )}
+                                  </Button>
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Upload PDF
+                                  </div>
+                                  {/* Upload progress indicator */}
+                                  {isGenerating && (
+                                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center animate-pulse">
+                                      <div className="w-2 h-2 bg-white rounded-full"></div>
+                                    </div>
+                                  )}
+                                  {questionsGenerated && (
+                                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
+                                      <div className="w-2 h-2 bg-white rounded-full"></div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Discord Link Button */}
+                              <DiscordLinkButton 
+                                isHost={isHost}
+                                discordLink={discordLink}
+                                onSave={handleDiscordLinkSave}
+                              />
+
+                              {/* Request Host Button - Only for Non-Host */}
+                              {!isHost && !hasLeftRoom && (
+                                <div className="relative group">
+                                  <Button
+                                    size="icon"
+                                    variant="outline"
+                                    className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
+                                    onClick={setNewHost}
+                                    disabled={isRequestingHost}
+                                  >
+                                    {isRequestingHost ? (
+                                      <div className="h-7 w-7">...</div>
+                                    ) : (
+                                      <Crown className="h-7 w-7" />
+                                    )}
+                                  </Button>
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Request Host
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Leave Room Button */}
+                              <div className="relative group">
+                                <Button
+                                  size="icon"
+                                  variant="destructive"
+                                  className="h-14 w-14 bg-red-500 hover:bg-red-600 rounded-2xl"
+                                  onClick={handleLeaveRoom}
+                                >
+                                  <LogOut className="h-7 w-7" />
+                                </Button>
+                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                  Leave Session
+                                </div>
+                              </div>
+                            </div>
 
                             {/* Upload Progress and Success States */}
-                            {showHostButtons && isGenerating && (
+                            {isHost && isGenerating && (
                               <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
                                 <div className="flex items-center justify-center space-x-3">
                                   <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full"></div>
@@ -2612,7 +2427,7 @@ const fetchLectures = async () => {
                               </div>
                             )}
 
-                            {showHostButtons && uploadSuccess && !isGenerating && (
+                            {isHost && uploadSuccess && !isGenerating && (
                               <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-xl">
                                 <div className="flex items-center justify-center space-x-3">
                                   <CheckCircle className="h-5 w-5 text-green-600" />
@@ -2621,7 +2436,7 @@ const fetchLectures = async () => {
                               </div>
                             )}
 
-                            {showHostButtons && uploadFailed && !isGenerating && (
+                            {isHost && uploadFailed && !isGenerating && (
                               <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl">
                                 <div className="flex items-center justify-between space-x-3">
                                   <div className="flex items-center space-x-3">
@@ -2723,7 +2538,7 @@ const fetchLectures = async () => {
                               onGoalToggle={handleGoalToggle}
                               onAddGoal={handleAddGoal}
                               onDeleteGoal={handleDeleteGoal}
-                              isHost={showHostButtons}
+                              isHost={isHost}
                               className="h-full"
                             />
                           </CardContent>
@@ -2735,7 +2550,7 @@ const fetchLectures = async () => {
                     {visibleTabs.has('timer') && (
                       <div className="tab-content mb-6 break-inside-avoid">
                         <TimerWidget 
-                          isHost={showHostButtons}
+                          isHost={isHost}
                           initialDuration={timerDuration}
                           onTimerSet={(duration: number) => setTimerDuration(duration)}
                           description={timerDescription}
@@ -2939,7 +2754,7 @@ const fetchLectures = async () => {
       </Dialog>
       
       {/* PDF Upload Modal - Rendered outside of card structure for proper centering */}
-      {showHostButtons && (
+      {isHost && (
         <PDFUploadModal
           onFileUpload={handleFileUploadAndGenerate}
           uploadedFile={uploadedFile}
