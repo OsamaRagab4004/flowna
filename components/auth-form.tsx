@@ -196,6 +196,9 @@ export function AuthForm() {
               <>
                 {/* Google Login Button */}
                 <GoogleLogin
+                  {...{
+                    client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!,
+                  }}
                   onSuccess={async (credentialResponse) => {
                     if (credentialResponse.credential) {
                       setIsSubmitting(true)
@@ -239,6 +242,9 @@ export function AuthForm() {
                     })
                   }}
                 />
+
+
+                
 
                 <div className="relative">
                   <div className="absolute inset-0 flex items-center">
