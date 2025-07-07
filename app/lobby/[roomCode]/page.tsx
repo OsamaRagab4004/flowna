@@ -2237,7 +2237,7 @@ const fetchLectures = async () => {
                             <div className="space-y-2">
                               <div className="flex items-center gap-2 mb-2">
                                 <Users className="h-5 w-5 text-blue-500" />
-                                <h3 className="font-semibold">Participants ({players.length})</h3>
+                                <h3 className="font-semibold">Participants ({players.length}/8)</h3>
                               </div>
                               <PlayerList players={players} currentUsername={username} />
                             </div>
@@ -2292,9 +2292,6 @@ const fetchLectures = async () => {
                                   >
                                     <Play className="h-7 w-7" />
                                   </Button>
-                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                    Start Practice Session
-                                  </div>
                                 </div>
                               )}
 
@@ -2303,9 +2300,6 @@ const fetchLectures = async () => {
                                   lectures={lectures.map(l => ({ ...l, id: String(l.lectureId) }))}
                                   onLectureSelect={handleLectureSelect}
                                 />
-                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                  Study Materials
-                                </div>
                               </div>
 
                               <div className="relative group">
@@ -2317,9 +2311,6 @@ const fetchLectures = async () => {
                                 >
                                   <Timer className="h-7 w-7" />
                                 </Button>
-                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                  Study Timer
-                                </div>
                               </div>
 
                               {/* Study Goal Button */}
@@ -2333,9 +2324,6 @@ const fetchLectures = async () => {
                                   >
                                     <Target className="h-7 w-7" />
                                   </Button>
-                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                    Study Hours Goal
-                                  </div>
                                 </div>
                               )}
 
@@ -2355,9 +2343,6 @@ const fetchLectures = async () => {
                                       <Upload className="h-7 w-7" />
                                     )}
                                   </Button>
-                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                    Upload PDF
-                                  </div>
                                   {/* Upload progress indicator */}
                                   {isGenerating && (
                                     <div className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center animate-pulse">
@@ -2395,9 +2380,6 @@ const fetchLectures = async () => {
                                       <Crown className="h-7 w-7" />
                                     )}
                                   </Button>
-                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                    Request Host
-                                  </div>
                                 </div>
                               )}
 
@@ -2411,9 +2393,6 @@ const fetchLectures = async () => {
                                 >
                                   <LogOut className="h-7 w-7" />
                                 </Button>
-                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
-                                  Leave Session
-                                </div>
                               </div>
                             </div>
 
