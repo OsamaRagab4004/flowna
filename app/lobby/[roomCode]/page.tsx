@@ -28,6 +28,7 @@ import "@/styles/strategic-mind.css"; // Import the new CSS file
 import { LectureList } from "@/components/lecture-list";
 import { SessionList } from "@/components/session-list";
 import { getApiUrl } from '@/lib/api';
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip"
 
 export default function Lobby({ params }: { params: Promise<{ roomCode: string }> }) {
   const router = useRouter()
@@ -2466,121 +2467,140 @@ const fetchLectures = async () => {
                             <CardDescription className="text-lg text-gray-600">Control your study session</CardDescription>
                           </CardHeader>
                           <CardContent className="space-y-6 p-8">
-                            {/* Modern Action Buttons Row */}
-                            <div className="flex flex-wrap gap-4 justify-center pt-6">
-                              {/* Start Session Button - Only for Host */}
-                              {showHostButtons && (
-                                <div className="relative group">
-                                  <Button
-                                    size="icon"
-                                    className="h-14 w-14 bg-green-500 hover:bg-green-600 text-white rounded-2xl"
-                                    onClick={() => setShowSessionList(true)}
-                                  >
-                                    <Play className="h-7 w-7" />
-                                  </Button>
-                                </div>
-                              )}
+                            <TooltipProvider delayDuration={0}>
+                              <div className="flex flex-wrap gap-4 justify-center pt-6">
+                                {/* Start Session Button - Only for Host */}
+                                {showHostButtons && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        size="icon"
+                                        className="h-14 w-14 bg-green-500 hover:bg-green-600 text-white rounded-2xl"
+                                        onClick={() => setShowSessionList(true)}
+                                      >
+                                        <Play className="h-7 w-7" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Start Session</TooltipContent>
+                                  </Tooltip>
+                                )}
 
-                              <div className="relative group">
-                                <LectureList
-                                  lectures={lectures.map(l => ({ ...l, id: String(l.lectureId) }))}
-                                  onLectureSelect={handleLectureSelect}
-                                />
-                              </div>
-
-                              <div className="relative group">
-                                <Button
-                                  size="icon"
-                                  variant="outline"
-                                  className="h-14 w-14 border-2 border-purple-400/50 text-purple-600 hover:bg-purple-50 hover:border-purple-500 rounded-2xl"
-                                  onClick={() => toggleTab('timer')}
-                                >
-                                  <Timer className="h-7 w-7" />
-                                </Button>
-                              </div>
-
-                              {/* Study Goal Button */}
-                              {showHostButtons && (
-                                <div className="relative group">
-                                  <Button
-                                    size="icon"
-                                    variant="outline"
-                                    className="h-14 w-14 border-2 border-amber-400/50 text-amber-600 hover:bg-amber-50 hover:border-amber-500 rounded-2xl"
-                                    onClick={handleOpenStudyGoal}
-                                  >
-                                    <Target className="h-7 w-7" />
-                                  </Button>
-                                </div>
-                              )}
-
-                              {/* Upload Material Button */}
-                              {showHostButtons && (
-                                <div className="relative group">
-                                  <Button
-                                    size="icon"
-                                    variant="outline"
-                                    className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
-                                    onClick={() => setShowUploadModal(true)}
-                                    disabled={isGenerating}
-                                  >
-                                    {isGenerating ? (
-                                      <div className="animate-spin h-7 w-7 border-2 border-blue-600 border-t-transparent rounded-full" />
-                                    ) : (
-                                      <Upload className="h-7 w-7" />
-                                    )}
-                                  </Button>
-                                  {/* Upload progress indicator */}
-                                  {isGenerating && (
-                                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center animate-pulse">
-                                      <div className="w-2 h-2 bg-white rounded-full"></div>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div>
+                                      <LectureList
+                                        lectures={lectures.map(l => ({ ...l, id: String(l.lectureId) }))}
+                                        onLectureSelect={handleLectureSelect}
+                                      />
                                     </div>
-                                  )}
-                                  {questionsGenerated && (
-                                    <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center">
-                                      <div className="w-2 h-2 bg-white rounded-full"></div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Lectures</TooltipContent>
+                                </Tooltip>
+
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="icon"
+                                      variant="outline"
+                                      className="h-14 w-14 border-2 border-purple-400/50 text-purple-600 hover:bg-purple-50 hover:border-purple-500 rounded-2xl"
+                                      onClick={() => toggleTab('timer')}
+                                    >
+                                      <Timer className="h-7 w-7" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Timer</TooltipContent>
+                                </Tooltip>
+
+                                {/* Study Goal Button */}
+                                {showHostButtons && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        size="icon"
+                                        variant="outline"
+                                        className="h-14 w-14 border-2 border-amber-400/50 text-amber-600 hover:bg-amber-50 hover:border-amber-500 rounded-2xl"
+                                        onClick={handleOpenStudyGoal}
+                                      >
+                                        <Target className="h-7 w-7" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Set Study Goal</TooltipContent>
+                                  </Tooltip>
+                                )}
+
+                                {/* Upload Material Button */}
+                                {showHostButtons && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        size="icon"
+                                        variant="outline"
+                                        className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
+                                        onClick={() => setShowUploadModal(true)}
+                                        disabled={isGenerating}
+                                      >
+                                        {isGenerating ? (
+                                          <div className="animate-spin h-7 w-7 border-2 border-blue-600 border-t-transparent rounded-full" />
+                                        ) : (
+                                          <Upload className="h-7 w-7" />
+                                        )}
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Upload Material</TooltipContent>
+                                  </Tooltip>
+                                )}
+
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <div>
+                                      <DiscordLinkButton 
+                                        isHost={showHostButtons}
+                                        discordLink={discordLink}
+                                        onSave={handleDiscordLinkSave}
+                                      />
                                     </div>
-                                  )}
-                                </div>
-                              )}
+                                  </TooltipTrigger>
+                                  <TooltipContent>Discord Link</TooltipContent>
+                                </Tooltip>
 
-                              {/* Discord Link Button */}
-                              <DiscordLinkButton 
-                                isHost={showHostButtons}
-                                discordLink={discordLink}
-                                onSave={handleDiscordLinkSave}
-                              />
+                                {/* Request Host Button - Only for Non-Host */}
+                                {!showHostButtons && !hasLeftRoom && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button
+                                        size="icon"
+                                        variant="outline"
+                                        className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
+                                        onClick={setNewHost}
+                                        disabled={isRequestingHost}
+                                      >
+                                        {isRequestingHost ? (
+                                          <div className="h-7 w-7">...</div>
+                                        ) : (
+                                          <Crown className="h-7 w-7" />
+                                        )}
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Request Host</TooltipContent>
+                                  </Tooltip>
+                                )}
 
-                              {/* Request Host Button - Only for Non-Host */}
-                              {!showHostButtons && !hasLeftRoom && (
-                                <div className="relative group">
-                                  <Button
-                                    size="icon"
-                                    variant="outline"
-                                    className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
-                                    onClick={setNewHost}
-                                    disabled={isRequestingHost}
-                                  >
-                                    {isRequestingHost ? (
-                                      <div className="h-7 w-7">...</div>
-                                    ) : (
-                                      <Crown className="h-7 w-7" />
-                                    )}
-                                  </Button>
-                                </div>
-                              )}
-
-                              {/* Leave Room Button */}
-                              <div className="relative group">
-                                <Button
-                                  size="icon"
-                                  variant="destructive"
-                                  className="h-14 w-14 bg-red-500 hover:bg-red-600 rounded-2xl"
-                                  onClick={handleLeaveRoom}
-                                >
-                                  <LogOut className="h-7 w-7" />
-                                </Button>
+                                {/* Leave Room Button */}
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="icon"
+                                      variant="destructive"
+                                      className="h-14 w-14 bg-red-500 hover:bg-red-600 rounded-2xl"
+                                      onClick={handleLeaveRoom}
+                                    >
+                                      <LogOut className="h-7 w-7" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Leave Room</TooltipContent>
+                                </Tooltip>
                               </div>
-                            </div>
+                            </TooltipProvider>
 
                             {/* Upload Progress and Success States */}
                             {showHostButtons && isGenerating && (
