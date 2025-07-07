@@ -772,6 +772,10 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         
          if (response.eventType === "ROOM_MEMBERS_LIST") {
           console.log("📥 [ROOM_MEMBERS_LIST] Received room members from server:", response.payload);
+          console.log("📥 [ROOM_MEMBERS_LIST] Current user details:", { 
+            userName: user?.name
+          });
+          
           fetchRoomMessages();
           getGoalsFromServer();
           setRoomGoalStudyHours();
@@ -780,27 +784,59 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
           updateRoomStats();
 
           const newPlayers = Array.isArray(response.payload) ? response.payload : [];
+          
+          // Detailed logging of each player
+          console.log("📥 [ROOM_MEMBERS_LIST] Detailed player analysis:");
+          newPlayers.forEach((player: any, index: number) => {
+            console.log(`Player ${index + 1}:`, {
+              username: player.username,
+              email: player.email,
+              host: player.host,
+              isCurrentUser: player.username === user?.name,
+              rawPlayer: player
+            });
+          });
         
           setPlayers(newPlayers);
           setRoomLoading(false); // Mark room data as loaded after first fetch
           
           // Force update host status immediately when we get new player data
           if (user && user.name && newPlayers.length > 0) {
-            const currentUserIsHost = newPlayers.some(
-              (player: any) => player.host && player.username === user.name
-            );
-            console.log("🎯 [ROOM_MEMBERS_LIST] Force updating host status:", {
-              user: user.name,
-              isHost: currentUserIsHost,
-              players: newPlayers.map((p: any) => ({ username: p.username, host: p.host }))
+            // Try multiple ways to match the current user
+            const currentUserIsHost = newPlayers.some((player: any) => {
+              const isMatchByUsername = player.host && player.username === user.name;
+              return isMatchByUsername;
             });
-            setIsHost(currentUserIsHost);
-            setStoredIsHost(currentUserIsHost);
+            
+            // If no host found and user is the only player, make them host
+            const noHostExists = !newPlayers.some((player: any) => player.host);
+            const shouldBeHost = currentUserIsHost || (noHostExists && newPlayers.length === 1);
+            
+            console.log("🎯 [ROOM_MEMBERS_LIST] Host status analysis:", {
+              user: user.name,
+              currentUserIsHost,
+              noHostExists,
+              shouldBeHost,
+              playersWithHost: newPlayers.filter((p: any) => p.host),
+              allPlayers: newPlayers.map((p: any) => ({ username: p.username, host: p.host }))
+            });
+            
+            setIsHost(shouldBeHost);
+            setStoredIsHost(shouldBeHost);
             setHostStatusReceived(true); // Mark that we've received host status
             
             // Save to localStorage
             if (typeof window !== "undefined") {
-              localStorage.setItem(`isHost_${roomCode}`, String(currentUserIsHost));
+              localStorage.setItem(`isHost_${roomCode}`, String(shouldBeHost));
+            }
+            
+            // If we determined the user should be host but server doesn't show them as host, 
+            // try to set them as host on the server
+            if (shouldBeHost && !currentUserIsHost && noHostExists) {
+              console.log("🔧 [ROOM_MEMBERS_LIST] User should be host but server doesn't show them as host, attempting to set host status");
+              setTimeout(() => {
+                setNewHost(); // This will call the set host API
+              }, 1000);
             }
           }
         } 
@@ -938,14 +974,28 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       const currentUserIsHost = players.some(
         (player: any) => player.host && player.username === user.name
       );
-      console.log(`[Host Effect] User: ${user.name}, IsHost: ${currentUserIsHost}`, players);
-      setIsHost(currentUserIsHost);
-      setStoredIsHost(currentUserIsHost);
+      
+      // Use the same logic as ROOM_MEMBERS_LIST handler - if no host exists and user is the only player, make them host
+      const noHostExists = !players.some((player: any) => player.host);
+      const shouldBeHost = currentUserIsHost || (noHostExists && players.length === 1);
+      
+      console.log(`[Host Effect] User: ${user.name}, currentUserIsHost: ${currentUserIsHost}, noHostExists: ${noHostExists}, shouldBeHost: ${shouldBeHost}`, players);
+      setIsHost(shouldBeHost);
+      setStoredIsHost(shouldBeHost);
       setHostStatusReceived(true); // Mark that we've received host status from server
       
       // Save to localStorage for persistence across page reloads
       if (typeof window !== "undefined") {
-        localStorage.setItem(`isHost_${roomCode}`, String(currentUserIsHost));
+        localStorage.setItem(`isHost_${roomCode}`, String(shouldBeHost));
+      }
+      
+      // If we determined the user should be host but server doesn't show them as host, 
+      // try to set them as host on the server
+      if (shouldBeHost && !currentUserIsHost && noHostExists) {
+        console.log("🔧 [Host Effect] User should be host but server doesn't show them as host, attempting to set host status");
+        setTimeout(() => {
+          setNewHost(); // This will call the set host API
+        }, 1000);
       }
     } else if (hostStatusReceived) {
       // Only reset to false if we've previously received host status from server
