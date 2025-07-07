@@ -33,7 +33,15 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const router = useRouter()
   const { toast } = useToast()
   const { roomCode } = use(params)
-  const [isHost, setIsHost] = useState(false)
+  const [isHost, setIsHost] = useState(() => {
+    // Initialize from localStorage if available
+    if (typeof window !== "undefined") {
+      const savedHostStatus = localStorage.getItem(`isHost_${roomCode}`);
+      return savedHostStatus === 'true';
+    }
+    return false;
+  })
+  const [hostStatusReceived, setHostStatusReceived] = useState(false) // Track if we've received host status from server
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [isGenerating, setIsGenerating] = useState(false)
   const [questionsGenerated, setQuestionsGenerated] = useState(false)
@@ -260,6 +268,34 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const [typingUsers, setTypingUsers] = useState<string[]>([]) // Array of users currently typing
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null) // Timeout for clearing typing status
 
+  // Computed value for showing host buttons - more resilient to race conditions
+  const showHostButtons = useMemo(() => {
+    // Always show if definitively host
+    if (isHost) return true;
+    
+    // Show if we're the only player and haven't received definitive host status yet
+    if (!hostStatusReceived && players.length <= 1 && user) return true;
+    
+    // Show if localStorage indicates we're host (for page reload scenarios)
+    if (typeof window !== "undefined" && !hostStatusReceived) {
+      const savedHostStatus = localStorage.getItem(`isHost_${roomCode}`);
+      if (savedHostStatus === 'true') return true;
+    }
+    
+    return false;
+  }, [isHost, hostStatusReceived, players.length, user, roomCode]);
+
+  // Debug effect for showHostButtons
+  useEffect(() => {
+    console.log("🔧 [HOST_BUTTONS] Show host buttons state:", {
+      showHostButtons,
+      isHost,
+      hostStatusReceived,
+      playersLength: players.length,
+      hasUser: !!user,
+      localStorageHost: typeof window !== "undefined" ? localStorage.getItem(`isHost_${roomCode}`) : null
+    });
+  }, [showHostButtons, isHost, hostStatusReceived, players.length, user, roomCode]);
 
 
   // Debug: Log typing users changes - only in development
@@ -629,18 +665,45 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const fetchRoomMembers = useCallback(() => {
     if (stompClient && stompClient.connected && roomCode) {
       console.log("📡 [FETCH_MEMBERS] Sending room members request", { roomCode, connected: stompClient.connected });
-      stompClient.publish({
-        destination: "/app/room-members",
-        body: JSON.stringify({ roomJoinCode: roomCode }),
-      })
+      try {
+        stompClient.publish({
+          destination: "/app/room-members",
+          body: JSON.stringify({ roomJoinCode: roomCode }),
+        });
+        
+        // Set a timeout to handle no response (network issues in deployment)
+        setTimeout(() => {
+          if (players.length === 0 && roomLoading) {
+            console.warn("⚠️ [FETCH_MEMBERS] No response after 10 seconds, stopping loading state");
+            setRoomLoading(false);
+            // Try to force fetch one more time
+            if (stompClient?.connected) {
+              console.log("🔄 [FETCH_MEMBERS] Retrying room members request");
+              stompClient.publish({
+                destination: "/app/room-members", 
+                body: JSON.stringify({ roomJoinCode: roomCode }),
+              });
+            }
+          }
+        }, 10000); // 10 second timeout
+        
+      } catch (error) {
+        console.error("❌ [FETCH_MEMBERS] Error sending request:", error);
+        setRoomLoading(false);
+      }
     } else {
       console.warn("⚠️ [FETCH_MEMBERS] Cannot fetch room members:", {
         hasStompClient: !!stompClient,
         isConnected: stompClient?.connected,
         hasRoomCode: !!roomCode
       });
+      // Don't stay in loading state if STOMP is not ready
+      if (!stompClient?.connected) {
+        console.log("🔄 [FETCH_MEMBERS] STOMP not connected, stopping loading state");
+        setRoomLoading(false);
+      }
     }
-  }, [stompClient, roomCode])
+  }, [stompClient, roomCode, players.length, roomLoading])
 
 
   const fetchRoomMessages = useCallback(() => {
@@ -708,10 +771,10 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         const response = JSON.parse(message.body)
         
          if (response.eventType === "ROOM_MEMBERS_LIST") {
+          console.log("📥 [ROOM_MEMBERS_LIST] Received room members from server:", response.payload);
           fetchRoomMessages();
           getGoalsFromServer();
           setRoomGoalStudyHours();
-          fetchDiscordLink();
           fetchLectures();
           fetchSessions();
           updateRoomStats();
@@ -720,13 +783,25 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         
           setPlayers(newPlayers);
           setRoomLoading(false); // Mark room data as loaded after first fetch
-          // Directly update host status here when we get new player data
-          if (user && user.name) {
+          
+          // Force update host status immediately when we get new player data
+          if (user && user.name && newPlayers.length > 0) {
             const currentUserIsHost = newPlayers.some(
               (player: any) => player.host && player.username === user.name
             );
+            console.log("🎯 [ROOM_MEMBERS_LIST] Force updating host status:", {
+              user: user.name,
+              isHost: currentUserIsHost,
+              players: newPlayers.map((p: any) => ({ username: p.username, host: p.host }))
+            });
             setIsHost(currentUserIsHost);
             setStoredIsHost(currentUserIsHost);
+            setHostStatusReceived(true); // Mark that we've received host status
+            
+            // Save to localStorage
+            if (typeof window !== "undefined") {
+              localStorage.setItem(`isHost_${roomCode}`, String(currentUserIsHost));
+            }
           }
         } 
          if (response.eventType === "SET_ROOM_HOURS_GOAL") {
@@ -851,13 +926,11 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
   // Effect to update host status whenever players or user changes
   useEffect(() => {
-    console.log(`[Host Effect] Checking host status. Loading: ${loading}, User: ${user?.name}, Players: ${players.length}`);
+    console.log(`[Host Effect] Checking host status. Loading: ${loading}, User: ${user?.name}, Players: ${players.length}, HostStatusReceived: ${hostStatusReceived}`);
     
     if (loading || !user) {
-      console.log(`[Host Effect] User not ready, setting isHost to false`);
-      setIsHost(false);
-      setStoredIsHost(false);
-      return;
+      console.log(`[Host Effect] User not ready, keeping current isHost status`);
+      return; // Don't reset isHost until user is ready
     }
     
     // Check host status from players array
@@ -868,12 +941,61 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       console.log(`[Host Effect] User: ${user.name}, IsHost: ${currentUserIsHost}`, players);
       setIsHost(currentUserIsHost);
       setStoredIsHost(currentUserIsHost);
-    } else {
-      console.log(`[Host Effect] No players data, setting isHost to false`);
+      setHostStatusReceived(true); // Mark that we've received host status from server
+      
+      // Save to localStorage for persistence across page reloads
+      if (typeof window !== "undefined") {
+        localStorage.setItem(`isHost_${roomCode}`, String(currentUserIsHost));
+      }
+    } else if (hostStatusReceived) {
+      // Only reset to false if we've previously received host status from server
+      // This prevents the race condition on initial load
+      console.log(`[Host Effect] No players data but host status was previously received, setting isHost to false`);
       setIsHost(false);
       setStoredIsHost(false);
+      if (typeof window !== "undefined") {
+        localStorage.setItem(`isHost_${roomCode}`, 'false');
+      }
+    } else {
+      console.log(`[Host Effect] No players data and no host status received yet, keeping current isHost status`);
     }
-  }, [players, user, loading]); // Include players in dependencies
+  }, [players, user, loading, hostStatusReceived, roomCode]); // Include hostStatusReceived and roomCode in dependencies
+
+  // Debug effect to track host status changes
+  useEffect(() => {
+    console.log("🔍 [HOST_DEBUG] Host status state changed:", {
+      isHost,
+      hostStatusReceived,
+      loading,
+      user: user?.name,
+      playersCount: players.length,
+      hasUser: !!user,
+      timestamp: new Date().toISOString()
+    });
+  }, [isHost, hostStatusReceived, loading, user, players.length]);
+
+  // Fallback mechanism: If we're the only player and no host status received after 5 seconds, assume we're host
+  useEffect(() => {
+    if (!loading && user && players.length === 1 && !hostStatusReceived && !isHost) {
+      const fallbackTimer = setTimeout(() => {
+        if (players.length === 1 && !hostStatusReceived) {
+          console.log("🎯 [HOST_FALLBACK] Only player in room and no host status received, assuming host status");
+          setIsHost(true);
+          setStoredIsHost(true);
+          setHostStatusReceived(true);
+          if (typeof window !== "undefined") {
+            localStorage.setItem(`isHost_${roomCode}`, 'true');
+          }
+          toast({
+            title: "Host Status",
+            description: "You are now the host of this room",
+          });
+        }
+      }, 5000); // Wait 5 seconds
+
+      return () => clearTimeout(fallbackTimer);
+    }
+  }, [loading, user, players.length, hostStatusReceived, isHost, roomCode, toast]);
 
   useEffect(() => {
     if (loading || !user || !roomCode || !stompClient) {
@@ -947,6 +1069,22 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       }
     }
   }, [stompClient?.connected, roomCode, user, loading, players.length, roomLoading, fetchRoomMembers])
+
+  // Force immediate room member fetching when STOMP becomes available
+  useEffect(() => {
+    if (stompClient?.connected && user && roomCode && players.length === 0) {
+      console.log("🚀 [FORCE_FETCH] STOMP connected and no players - force fetching immediately");
+      
+      // Add a small delay to ensure STOMP is fully ready
+      const immediateTimer = setTimeout(() => {
+        if (stompClient?.connected) {
+          fetchRoomMembers();
+        }
+      }, 100);
+      
+      return () => clearTimeout(immediateTimer);
+    }
+  }, [stompClient?.connected, user, roomCode, players.length, fetchRoomMembers]);
 
   // Check for page reload and show alert using sessionStorage
   useEffect(() => {
@@ -2045,8 +2183,6 @@ const fetchLectures = async () => {
       done: false
     }
     
-    
-    
     const res = fetch(getApiUrl("api/v1/squadgames/rooms/goals/add"), {
       method: "POST",
       headers: {
@@ -2056,7 +2192,7 @@ const fetchLectures = async () => {
       body: JSON.stringify(goalRequestBody)
     })
     
-    res.then(async response => {
+    res.then(async (response: any) => {
       if (response.ok) {
         const data = await response.json();
         console.log("✅ [ADD_GOAL] Goal added successfully:", data)
@@ -2076,7 +2212,7 @@ const fetchLectures = async () => {
           variant: "destructive"
         })
       }
-    }).catch(error => {
+    }).catch((error: any) => {
       console.error("❌ [ADD_GOAL] Network error:", error)
       toast({
         title: "Error",
@@ -2283,7 +2419,7 @@ const fetchLectures = async () => {
                             {/* Modern Action Buttons Row */}
                             <div className="flex flex-wrap gap-4 justify-center pt-6">
                               {/* Start Session Button - Only for Host */}
-                              {isHost && (
+                              {showHostButtons && (
                                 <div className="relative group">
                                   <Button
                                     size="icon"
@@ -2314,7 +2450,7 @@ const fetchLectures = async () => {
                               </div>
 
                               {/* Study Goal Button */}
-                              {isHost && (
+                              {showHostButtons && (
                                 <div className="relative group">
                                   <Button
                                     size="icon"
@@ -2328,7 +2464,7 @@ const fetchLectures = async () => {
                               )}
 
                               {/* Upload Material Button */}
-                              {isHost && (
+                              {showHostButtons && (
                                 <div className="relative group">
                                   <Button
                                     size="icon"
@@ -2359,13 +2495,13 @@ const fetchLectures = async () => {
 
                               {/* Discord Link Button */}
                               <DiscordLinkButton 
-                                isHost={isHost}
+                                isHost={showHostButtons}
                                 discordLink={discordLink}
                                 onSave={handleDiscordLinkSave}
                               />
 
                               {/* Request Host Button - Only for Non-Host */}
-                              {!isHost && !hasLeftRoom && (
+                              {!showHostButtons && !hasLeftRoom && (
                                 <div className="relative group">
                                   <Button
                                     size="icon"
@@ -2397,7 +2533,7 @@ const fetchLectures = async () => {
                             </div>
 
                             {/* Upload Progress and Success States */}
-                            {isHost && isGenerating && (
+                            {showHostButtons && isGenerating && (
                               <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-xl">
                                 <div className="flex items-center justify-center space-x-3">
                                   <div className="animate-spin h-5 w-5 border-2 border-blue-600 border-t-transparent rounded-full"></div>
@@ -2406,7 +2542,7 @@ const fetchLectures = async () => {
                               </div>
                             )}
 
-                            {isHost && uploadSuccess && !isGenerating && (
+                            {showHostButtons && uploadSuccess && !isGenerating && (
                               <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-xl">
                                 <div className="flex items-center justify-center space-x-3">
                                   <CheckCircle className="h-5 w-5 text-green-600" />
@@ -2415,7 +2551,7 @@ const fetchLectures = async () => {
                               </div>
                             )}
 
-                            {isHost && uploadFailed && !isGenerating && (
+                            {showHostButtons && uploadFailed && !isGenerating && (
                               <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl">
                                 <div className="flex items-center justify-between space-x-3">
                                   <div className="flex items-center space-x-3">
@@ -2517,7 +2653,7 @@ const fetchLectures = async () => {
                               onGoalToggle={handleGoalToggle}
                               onAddGoal={handleAddGoal}
                               onDeleteGoal={handleDeleteGoal}
-                              isHost={isHost}
+                              isHost={showHostButtons}
                               className="h-full"
                             />
                           </CardContent>
@@ -2529,7 +2665,7 @@ const fetchLectures = async () => {
                     {visibleTabs.has('timer') && (
                       <div className="tab-content mb-6 break-inside-avoid">
                         <TimerWidget 
-                          isHost={isHost}
+                          isHost={showHostButtons}
                           initialDuration={timerDuration}
                           onTimerSet={(duration: number) => setTimerDuration(duration)}
                           description={timerDescription}
@@ -2733,7 +2869,7 @@ const fetchLectures = async () => {
       </Dialog>
       
       {/* PDF Upload Modal - Rendered outside of card structure for proper centering */}
-      {isHost && (
+      {showHostButtons && (
         <PDFUploadModal
           onFileUpload={handleFileUploadAndGenerate}
           uploadedFile={uploadedFile}

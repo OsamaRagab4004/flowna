@@ -27,6 +27,7 @@ import { set } from "date-fns"
 import "@/styles/strategic-mind.css"; // Import the new CSS file
 import { LectureList } from "@/components/lecture-list";
 import { SessionList } from "@/components/session-list";
+import { getApiUrl } from '@/lib/api';
 
 export default function Lobby({ params }: { params: Promise<{ roomCode: string }> }) {
   const router = useRouter()
@@ -188,7 +189,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
    
   };
- //#region SessionSelect
+
   const handleSessionSelect = (sessionId: string) => {
     console.log("🎮 [SESSION_SELECT] Session selected:", sessionId);
     
@@ -208,9 +209,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
     // Close the session list
     setShowSessionList(false);
-// #region Schedule
+
     // add exam to Scheduler and trigger event for other users to open exam
-    const res = fetch("http://localhost:8080/api/v1/scheduler/schedule", 
+    const res = fetch(getApiUrl("api/v1/scheduler/schedule"), 
       {
         method: "POST",
         headers: {
@@ -296,9 +297,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
 
   // Study Stats state variables  
-  //#region StudyStats
-  const [studyTimeMinutes, setStudyTimeMinutes] = useState(120) // Demo: 3 hours
-  const [practiceTimeMinutes, setPracticeTimeMinutes] = useState(120) // Demo: 2 hours
+ 
+  const [studyTimeMinutes, setStudyTimeMinutes] = useState(0) // Demo: 3 hours
+  const [practiceTimeMinutes, setPracticeTimeMinutes] = useState(0) // Demo: 2 hours
   const [sessionGoalHours, setSessionGoalHours] = useState(0) // Default: 0 hours
   // Study goal modal state
   const [tempStudyGoal, setTempStudyGoal] = useState(0)
@@ -345,7 +346,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         msgContent: messageContent.trim(),
       }
 
-      const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/messages/send", {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/messages/send"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -448,6 +449,43 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     }
   }, [])
 
+
+
+  const updateRoomStats = async () => {
+
+    const res = await fetch(getApiUrl("api/v1/squadgames/rooms/session-time"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${user?.access_token}`,
+      },
+      body: JSON.stringify({
+        roomJoinCode: roomCode,
+      }),
+    })
+    if (res.ok) {
+      const data = await res.json()
+      console.log("📊 [ROOM_STATS] Updated room stats:", data)
+
+      // Update study and practice time based on server data
+      setStudyTimeMinutes(data.roomStudyMinutes || 0)
+      setPracticeTimeMinutes(data.roomPractiseMinutes || 0)
+
+      // Update session goals if available
+      if (data.sessionGoals) {
+        setSessionGoals(data.sessionGoals)
+      }
+
+    }
+
+
+
+  }
+
+
+
+
+
   const leaveRoom = useCallback(() => {
     if (!user || !roomCode) {
       console.warn("leaveRoom called without user or roomCode. Aborting API call.")
@@ -461,7 +499,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       setNeedsRejoin(true);
     }
 
-    const url = "http://localhost:8080/api/v1/squadgames/rooms/leave-room"
+    const url = getApiUrl("api/v1/squadgames/rooms/leave-room")
     const body = JSON.stringify({
       roomJoinCode: roomCode,
       archive: false,
@@ -633,7 +671,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       if (hours) {
         setSessionGoalHours(JSON.parse(hours))
       } else {
-        const res = fetch(`http://localhost:8080/api/v1/squadgames/rooms/room-hours-goal`, {
+        const res = fetch(getApiUrl("api/v1/squadgames/rooms/room-hours-goal"), {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -664,7 +702,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
 
   
-//#region RoomHandler
   const handleRoomMessage = useCallback(
     (message: { body: any }) => {
       try {
@@ -677,6 +714,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
           fetchDiscordLink();
           fetchLectures();
           fetchSessions();
+          updateRoomStats();
 
           const newPlayers = Array.isArray(response.payload) ? response.payload : [];
         
@@ -696,7 +734,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
           localStorage.setItem(`sessionGoal_${roomCode}`, JSON.stringify(response.payload))
         }
 
-        //#region ExamStarted
         if(response.eventType === "EXAM_STARTED") {
           const collectorId = response.payload;
           leaveRoom(); // Leave the room before opening exam page
@@ -792,6 +829,15 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
             })
           }
         }
+        if (response.eventType === "ROOM_SESSION_TIME_UPDATE") {
+         const data = response.payload;
+          
+          // Update study and practice time based on server data
+          setStudyTimeMinutes(data.roomStudyMinutes);
+          setPracticeTimeMinutes(data.roomPractiseMinutes);
+          
+        }
+        
       } catch (err) {
         console.error("Lobby: Failed to parse or process room message", err)
       }
@@ -835,6 +881,32 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     }
 
     console.log(players, "✅ Conditions met. Setting up STOMP subscription and fetching members...")
+
+    // Function to join room on mount
+    const joinRoomOnMount = async () => {
+      try {
+        console.log("🔗 [JOIN_ON_MOUNT] Joining room on component mount:", roomCode)
+        const response = await fetch(getApiUrl("api/v1/squadgames/rooms/join"), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${user.access_token}`,
+          },
+          body: JSON.stringify({ roomJoinCode: roomCode }),
+        })
+
+        if (response.ok) {
+          console.log("✅ [JOIN_ON_MOUNT] Successfully joined room on mount")
+        } else {
+          console.warn("⚠️ [JOIN_ON_MOUNT] Failed to join room on mount:", response.status)
+        }
+      } catch (error) {
+        console.error("❌ [JOIN_ON_MOUNT] Error joining room on mount:", error)
+      }
+    }
+
+    // Execute join room on every mount
+    joinRoomOnMount()
 
     const topic = `/topic/rooms/${roomCode}`
     const currentSubscription = subscribeToTopic(topic, handleRoomMessage)
@@ -899,7 +971,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
             if (user) {
                 console.log("🔄 Auto-rejoining room after reload...");
                 try {
-                    const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/join", {
+                    const response = await fetch(getApiUrl("api/v1/squadgames/rooms/join"), {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
@@ -1001,7 +1073,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
     const filename = file.name;
 
-    fetch("http://localhost:8080/api/v1/rooms/gemini/upload", {
+    fetch(getApiUrl("api/v1/rooms/gemini/upload"), {
       method: "POST",
       headers: {
         Authorization: `Bearer ${user?.access_token}`,
@@ -1023,7 +1095,6 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       })
       
       setUploadSuccess(true)
-      //#region SummaryMCQS Generation
       // Generate content based on type
       if (type === 'summary') {
         return generateSummary(mimeType, uri, summarySettings!, filename);
@@ -1048,13 +1119,12 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   
 
 
-//#region ContentGeneration
   const generateSummary = (mimeType: string, uri: string, settings: SummarySettings, filename: string): Question[] => {
     console.log("mimeType:", mimeType);
     console.log("uri:", uri);
     console.log("Summary settings:", settings);
 
-    fetch("http://localhost:8080/api/v1/rooms/gemini/study/generate", {
+    fetch(getApiUrl("api/v1/rooms/gemini/study/generate"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1107,7 +1177,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     console.log("uri:", uri);
     console.log("MCQ settings:", settings);
 
-    fetch("http://localhost:8080/api/v1/rooms/gemini/practise/generate", {
+    fetch(getApiUrl("api/v1/rooms/gemini/practise/generate"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1192,7 +1262,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     }
 
     try {
-      const res = await fetch("http://localhost:8080/api/v1/squadgames/rooms/set-host", {
+      const res = await fetch(getApiUrl("api/v1/squadgames/rooms/set-host"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1255,7 +1325,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
     console.log("🚪 [MANUAL_LEAVE] Manually leaving room:", { roomCode, user: user.name });
 
-    const url = "http://localhost:8080/api/v1/squadgames/rooms/leave-room"
+    const url = getApiUrl("api/v1/squadgames/rooms/leave-room")
     const body = JSON.stringify({
       roomJoinCode: roomCode,
       archive: false,
@@ -1296,7 +1366,7 @@ const fetchLectures = async () => {
 
     
     
-    const res = await fetch("http://localhost:8080/api/v1/rooms/gemini/study/lectures/" + roomCode, {
+    const res = await fetch(getApiUrl("api/v1/rooms/gemini/study/lectures/" + roomCode), {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -1320,7 +1390,6 @@ const fetchLectures = async () => {
     const data = await res.json();
     setLectures(data);
   }
- //#region SessionsFetch
   const fetchSessions = async () => {
     
     if (!user || !roomCode) {
@@ -1331,7 +1400,7 @@ const fetchLectures = async () => {
     console.log("📡 [FETCH_SESSIONS] Fetching sessions from server", { roomCode, user: user.name });
     
     try {
-      const res = await fetch(`http://localhost:8080/api/v1/squadgames/questions-collector/room/${roomCode}`, {
+      const res = await fetch(getApiUrl(`api/v1/squadgames/questions-collector/room/${roomCode}`), {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -1380,7 +1449,7 @@ const fetchLectures = async () => {
     
     try {
       // Send join request to backend (same as join page)
-      const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/join", {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/join"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1444,7 +1513,7 @@ const fetchLectures = async () => {
   const handleReady = async () => {
     if (!user || !roomCode) return;
     try {
-      await fetch("http://localhost:8080/api/v1/squadgames/rooms/toggle-ready", {
+      await fetch(getApiUrl("api/v1/squadgames/rooms/toggle-ready"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1481,7 +1550,7 @@ const fetchLectures = async () => {
       
       console.log("📤 [START_TIMER] Request body:", requestBody)
 
-      const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/start-timer", {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/start-timer"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1534,7 +1603,7 @@ const fetchLectures = async () => {
       
       console.log("📤 [STOP_TIMER] Request body:", requestBody)
 
-      const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/stop-timer", {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/stop-timer"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1761,7 +1830,7 @@ const fetchLectures = async () => {
     }
 
     try {
-      const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/add-study-time", {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/add-study-time"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1811,7 +1880,7 @@ const fetchLectures = async () => {
   // Study goal handler functions
   const handleStudyGoalSubmit = () => {
     if (tempStudyGoal > 0) {
-      const res = fetch("http://localhost:8080/api/v1/squadgames/rooms/set-room-hours-goal", {
+      const res = fetch(getApiUrl("api/v1/squadgames/rooms/set-room-hours-goal"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1859,7 +1928,7 @@ const fetchLectures = async () => {
     });
 
     try {
-      const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/goals/toggle", {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/toggle"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1909,7 +1978,7 @@ const fetchLectures = async () => {
     console.log("📡 [FETCH_GOALS] Fetching goals from server", { roomCode, user: user.name });
 
     try {
-      const response = await fetch("http://localhost:8080/api/v1/squadgames/rooms/goals/all", {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/all"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1978,7 +2047,7 @@ const fetchLectures = async () => {
     
     
     
-    const res = fetch("http://localhost:8080/api/v1/squadgames/rooms/goals/add", {
+    const res = fetch(getApiUrl("api/v1/squadgames/rooms/goals/add"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2038,7 +2107,7 @@ const fetchLectures = async () => {
         roomJoinCode: roomCode,
       }
       
-      fetch("http://localhost:8080/api/v1/squadgames/rooms/goals/delete", {
+      fetch(getApiUrl("api/v1/squadgames/rooms/goals/delete"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -2074,7 +2143,7 @@ const fetchLectures = async () => {
   }
   // Discord link save handler
   const handleDiscordLinkSave = (link: string) => {
-    const res = fetch("http://localhost:8080/api/v1/squadgames/rooms/set-discord-link", {
+    const res = fetch(getApiUrl("api/v1/squadgames/rooms/set-discord-link"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2092,7 +2161,7 @@ const fetchLectures = async () => {
 
   const fetchDiscordLink = () => {
    
-    const res = fetch("http://localhost:8080/api/v1/squadgames/rooms/discord-link", {
+    const res = fetch(getApiUrl("api/v1/squadgames/rooms/discord-link"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -2345,6 +2414,28 @@ const fetchLectures = async () => {
                                 </div>
                               </div>
                             )}
+
+                            {isHost && uploadFailed && !isGenerating && (
+                              <div className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl">
+                                <div className="flex items-center justify-between space-x-3">
+                                  <div className="flex items-center space-x-3">
+                                    <X className="h-5 w-5 text-red-600" />
+                                    <span className="text-red-700 font-medium">Upload failed. Please try again.</span>
+                                  </div>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                      setShowUploadModal(true)
+                                      setUploadFailed(false)
+                                    }}
+                                    className="border-red-300 text-red-700 hover:bg-red-100"
+                                  >
+                                    Try Again
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
                           </CardContent>
                         </Card>
                       </div>
@@ -2446,6 +2537,8 @@ const fetchLectures = async () => {
                           isTimerRunning={isTimerRunning}
                           onTimerStateChange={handleTimerStateChange}
                           originalDuration={originalTimerDuration}
+                          accessToken={user?.access_token}
+                          roomJoinCode={roomCode}
                           startTime={(() => {
                             // Get start time from localStorage if available
                             if (typeof window !== "undefined" && isTimerRunning) {
@@ -2558,10 +2651,10 @@ const fetchLectures = async () => {
                 <span className={`text-xs font-medium mt-1 ${visibleTabs.has('goals') ? 'text-white' : 'text-gray-600'}`}>
                   Goals
                 </span>
-                {/* Goals progress indicator */}
+                {/* Goals progress indicator - Enhanced for better visibility */}
                 {sessionGoals.length > 0 && (
-                  <div className="absolute -top-1 -right-1 w-5 h-5 bg-green-500 rounded-full flex items-center justify-center">
-                    <span className="text-white text-xs font-bold">
+                  <div className="absolute -top-2 -right-2 w-7 h-7 bg-green-500 rounded-full flex items-center justify-center shadow-lg border-2 border-white">
+                    <span className="text-white text-sm font-extrabold leading-none">
                       {sessionGoals.filter(g => g.done).length}/{sessionGoals.length}
                     </span>
                   </div>
