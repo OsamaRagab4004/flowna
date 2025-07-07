@@ -195,10 +195,7 @@ export function AuthForm() {
             {!showReset ? (
               <>
                 {/* Google Login Button */}
-                <GoogleLogin
-                  {...{
-                    client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!,
-                  }}
+                <GoogleLogin              
                   onSuccess={async (credentialResponse) => {
                     if (credentialResponse.credential) {
                       setIsSubmitting(true)
