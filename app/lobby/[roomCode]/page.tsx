@@ -44,7 +44,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const { setGameState, addQuestion } = useGameContext()
   const { user, loading } = useAuth()
   const [storedIsHost, setStoredIsHost] = useState(true)
-  const { subscribeToTopic, unsubscribeFromTopic, stompClient } = useStomp()
+  const { subscribeToTopic, unsubscribeFromTopic, stompClient, isConnected, forceReconnect } = useStomp()
   const subscriptionRef = useRef<StompSubscription | null>(null)
   const hasManuallyLeftRef = useRef(false) // Track manual leave action
   const [players, setPlayers] = useState<any[]>([])
@@ -897,6 +897,73 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
   
 
+  // Connection monitoring and recovery - provides user feedback for connection state
+  const connectionLostRef = useRef(false)
+  const reconnectAttemptRef = useRef(0)
+  const maxReconnectAttempts = 5
+  
+  useEffect(() => {
+    if (!user || !roomCode) return
+
+    if (isConnected) {
+      // Connection restored
+      if (connectionLostRef.current) {
+        console.log("🔄 [CONNECTION] Connection restored, fetching room data")
+        connectionLostRef.current = false
+        reconnectAttemptRef.current = 0
+        
+        // Refetch room data after reconnection
+        setTimeout(() => {
+          fetchRoomMembers()
+          fetchRoomMessages()
+        }, 1000)
+        
+        toast({
+          title: "Connection Restored",
+          description: "Successfully reconnected to the room",
+        })
+      }
+    } else {
+      // Connection lost
+      if (!connectionLostRef.current) {
+        console.log("⚠️ [CONNECTION] Connection lost, will attempt to reconnect")
+        connectionLostRef.current = true
+        
+        toast({
+          title: "Connection Lost", 
+          description: "Attempting to reconnect...",
+          variant: "destructive",
+        })
+      }
+      
+      // Automatic reconnection: Attempts to reconnect when issues are detected
+      const attemptReconnect = () => {
+        if (reconnectAttemptRef.current < maxReconnectAttempts) {
+          reconnectAttemptRef.current++
+          console.log(`🔄 [CONNECTION] Reconnection attempt ${reconnectAttemptRef.current}/${maxReconnectAttempts}`)
+          
+          setTimeout(() => {
+            if (!isConnected && user && roomCode) {
+              forceReconnect()
+            }
+          }, 2000 * reconnectAttemptRef.current) // Exponential backoff
+        } else {
+          console.log("❌ [CONNECTION] Max reconnection attempts reached")
+          toast({
+            title: "Connection Failed",
+            description: "Unable to reconnect. Please refresh the page.",
+            variant: "destructive",
+          })
+        }
+      }
+      
+      // Start reconnection attempts after a delay
+      if (connectionLostRef.current && reconnectAttemptRef.current === 0) {
+        setTimeout(attemptReconnect, 3000)
+      }
+    }
+  }, [isConnected, user, roomCode, forceReconnect, fetchRoomMembers, fetchRoomMessages, toast])
+
   // Effect to update host status whenever players or user changes
   useEffect(() => {
     console.log(`[Host Effect] Checking host status. Loading: ${loading}, User: ${user?.name}, Players: ${players.length}`);
@@ -924,7 +991,14 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   }, [players, user, loading]); // Include players in dependencies
 
   useEffect(() => {
-    if (loading || !user || !roomCode || !stompClient) {
+    if (loading || !user || !roomCode || !stompClient || !isConnected) {
+      console.log("🔄 [STOMP_SETUP] Waiting for prerequisites:", {
+        loading,
+        hasUser: !!user,
+        hasRoomCode: !!roomCode,
+        hasStompClient: !!stompClient,
+        isConnected
+      })
       return
     }
 
@@ -980,6 +1054,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     loading,
     roomCode,
     stompClient,
+    isConnected,
     subscribeToTopic,
     unsubscribeFromTopic,
     handleRoomMessage,
@@ -2321,6 +2396,47 @@ const fetchLectures = async () => {
       <div className="lobby-content-wrapper">
         <div className="p-4 max-w-6xl w-full mx-auto flex flex-col items-center">
           <div className="w-full space-y-4">
+            {/* Connection Status Indicator - Shows when reconnecting with a retry button */}
+            {!isConnected && (
+              <div className="w-full max-w-4xl mx-auto">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      {/* Visual feedback: Amber indicator with pulsing animation during reconnection */}
+                      <div className="h-2 w-2 bg-amber-500 rounded-full animate-pulse"></div>
+                      <span className="text-sm text-amber-700 font-medium">
+                        {connectionLostRef.current 
+                          ? `Reconnecting... (Attempt ${reconnectAttemptRef.current}/${maxReconnectAttempts})`
+                          : "Connecting to room..."
+                        }
+                      </span>
+                    </div>
+                    {/* Manual reconnection: Users can force reconnect if automatic attempts fail */}
+                    {connectionLostRef.current && reconnectAttemptRef.current >= maxReconnectAttempts && (
+                      <button
+                        onClick={() => {
+                          reconnectAttemptRef.current = 0
+                          connectionLostRef.current = false
+                          forceReconnect()
+                        }}
+                        className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1 rounded text-sm font-medium transition-colors"
+                      >
+                        Retry Connection
+                      </button>
+                    )}
+                    {!connectionLostRef.current && (
+                      <button
+                        onClick={forceReconnect}
+                        className="text-xs bg-amber-100 hover:bg-amber-200 text-amber-700 px-2 py-1 rounded transition-colors"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            
             {/* Main Content Grid */}
             <div className="max-w-4xl w-full mx-auto">
               {/* Main Content Area - Tab System */}
