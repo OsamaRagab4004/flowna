@@ -56,6 +56,8 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       debug: function (str) {
         // console.log("STOMP DEBUG:", str); // Uncomment for verbose debugging
       },
+       heartbeatIncoming: 10000, // Client will expect a heartbeat from the server every 10s
+       heartbeatOutgoing: 10000,
       reconnectDelay: 5000,
       onStompError: (frame) => {
         console.error("STOMP Error:", frame.headers['message'], frame.body);

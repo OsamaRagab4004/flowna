@@ -494,6 +494,10 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
     console.log("🚪 [LEAVE_ROOM] Leaving room:", { roomCode, user: user.name });
 
+    // Clean up timer localStorage when leaving room to prevent confusion
+    console.log("🧹 [LEAVE_ROOM] Cleaning up timer localStorage");
+    clearTimerFromLocalStorage();
+
     if (isReload) {
       console.log("🔄 [LEAVE_ROOM] Page reload detected, setting needsRejoin flag");
       setNeedsRejoin(true);
@@ -544,12 +548,15 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         isRunning,
         timestamp: Date.now(),
         startTime: startTime || Date.now(), // When the timer actually started
-        originalDuration: originalDuration || duration // Store original duration for progress calculation
+        originalDuration: originalDuration || duration, // Store original duration for progress calculation
+        roomCode, // Include room code for validation
+        username: user?.name, // Include username for validation
+        sessionId: Date.now() // Unique session identifier to prevent conflicts
       }
       localStorage.setItem(`timer_${roomCode}`, JSON.stringify(timerData))
       console.log("💾 [TIMER_STORAGE] Saved timer to localStorage:", timerData)
     }
-  }, [roomCode])
+  }, [roomCode, user?.name])
 
   // Function to clear timer from localStorage
   const clearTimerFromLocalStorage = useCallback(() => {
@@ -558,6 +565,47 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       console.log("🗑️ [TIMER_STORAGE] Cleared timer from localStorage")
     }
   }, [roomCode])
+
+  // Function to validate timer localStorage data
+  const validateTimerFromLocalStorage = useCallback(() => {
+    if (typeof window !== "undefined" && roomCode) {
+      try {
+        const saved = localStorage.getItem(`timer_${roomCode}`)
+        if (saved) {
+          const timerData = JSON.parse(saved)
+          
+          // Validate that the timer data belongs to current room and user
+          if (timerData.roomCode !== roomCode) {
+            console.warn("🚨 [TIMER_VALIDATION] Timer data from different room, clearing:", timerData.roomCode, "vs", roomCode)
+            clearTimerFromLocalStorage()
+            return null
+          }
+          
+          if (timerData.username && timerData.username !== user?.name) {
+            console.warn("🚨 [TIMER_VALIDATION] Timer data from different user, clearing:", timerData.username, "vs", user?.name)
+            clearTimerFromLocalStorage()
+            return null
+          }
+          
+          // Check if timer data is too old (older than 24 hours)
+          const maxAge = 24 * 60 * 60 * 1000 // 24 hours in milliseconds
+          if (timerData.timestamp && (Date.now() - timerData.timestamp) > maxAge) {
+            console.warn("🚨 [TIMER_VALIDATION] Timer data too old, clearing")
+            clearTimerFromLocalStorage()
+            return null
+          }
+          
+          console.log("✅ [TIMER_VALIDATION] Timer data validated successfully:", timerData)
+          return timerData
+        }
+      } catch (e) {
+        console.warn("❌ [TIMER_VALIDATION] Failed to parse timer data from localStorage, clearing:", e)
+        clearTimerFromLocalStorage()
+        return null
+      }
+    }
+    return null
+  }, [roomCode, user?.name, clearTimerFromLocalStorage])
 
   // Function to handle timer started event from server
   const handleTimerStartedFromServer = useCallback((timerData: { 
@@ -922,6 +970,10 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         subscriptionRef.current = null
         console.log("Unsubscribed from STOMP topic.")
       }
+      
+      // Clean up timer localStorage on component unmount to prevent confusion
+      console.log("🧹 [COMPONENT_UNMOUNT] Cleaning up timer localStorage")
+      clearTimerFromLocalStorage()
     }
   }, [
     user,
@@ -1043,6 +1095,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         // This is a more reliable place for leave actions if `beforeunload` is tricky
         if (user && hasManuallyLeftRef.current === false) {
              console.log("🚪 [UNLOAD] Tab/window closing, calling leaveRoom");
+             // Clean up timer localStorage before leaving
+             console.log("🧹 [UNLOAD] Cleaning up timer localStorage before leaving");
+             clearTimerFromLocalStorage();
              leaveRoom();
         }
     };
@@ -1304,6 +1359,10 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     hasManuallyLeftRef.current = true; // Mark as manual leave
     setHasLeftRoom(true); 
     
+    // Clean up timer localStorage before leaving room to prevent confusion
+    console.log("🧹 [LEAVE_ROOM] Cleaning up timer localStorage before leaving room");
+    clearTimerFromLocalStorage();
+    
     // Use the manual leave function for proper API call
     const success = await manualLeaveRoom();
     
@@ -1429,7 +1488,59 @@ const fetchLectures = async () => {
     }
   }
 
+  const getGoalsFromServer = async () => {
+    if (!user || !roomCode) {
+      console.warn("Cannot fetch goals: missing user or room code")
+      return
+    }
 
+    console.log("📡 [FETCH_GOALS] Fetching goals from server", { roomCode, user: user.name });
+
+    try {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/get"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.access_token}`,
+        },
+        body: JSON.stringify({ roomJoinCode: roomCode }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log("✅ [FETCH_GOALS] Goals fetched successfully:", data);
+        
+        // Transform the goals data to match the expected format
+        const transformedGoals = data.map((goal: any) => ({
+          id: goal.id || "",
+          text: goal.goalTitle || goal.title || "",
+          done: goal.done || false,
+          duration: {
+            hours: goal.hours || 0,
+            minutes: goal.minutes || 0
+          }
+        }));
+        
+        setSessionGoals(transformedGoals);
+        console.log("📝 [FETCH_GOALS] Updated session goals:", transformedGoals);
+      } else {
+        const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+        console.error("❌ [FETCH_GOALS] Failed to fetch goals:", errorData);
+        toast({
+          title: "Error",
+          description: `Failed to fetch goals: ${errorData.message}`,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("❌ [FETCH_GOALS] Network error:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch goals. Please check your connection.",
+        variant: "destructive"
+      });
+    }
+  }
 
   // Function to rejoin the room (similar to join page logic)
   const handleRejoinRoom = async () => {
@@ -1724,43 +1835,56 @@ const fetchLectures = async () => {
   // Effect to check and sync timer state on component mount
   useEffect(() => {
     if (typeof window !== "undefined" && roomCode) {
-      try {
-        const saved = localStorage.getItem(`timer_${roomCode}`)
-        if (saved) {
-          const timerData = JSON.parse(saved)
+      // Use validation function to get timer data
+      const timerData = validateTimerFromLocalStorage()
+      
+      if (timerData) {
+        // If timer is running, ensure we have the correct remaining time
+        if (timerData.isRunning && timerData.startTime) {
+          const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
+          const remaining = Math.max(0, timerData.duration - elapsed)
           
-          // If timer is running, ensure we have the correct remaining time
-          if (timerData.isRunning && timerData.startTime) {
-            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-            const remaining = Math.max(0, timerData.duration - elapsed)
-            
-            console.log("🔄 [COMPONENT_MOUNT] Syncing timer on mount:", {
-              originalDuration: timerData.duration,
-              elapsed,
-              remaining,
-              currentTimerDuration: timerDuration,
-              startTime: new Date(timerData.startTime).toISOString(),
-              savedOriginalDuration: timerData.originalDuration
-            })
-            
-            // Update original duration if we have it from localStorage
-            if (timerData.originalDuration && timerData.originalDuration !== originalTimerDuration) {
-              console.log("🔄 [COMPONENT_MOUNT] Updating original duration from localStorage:", timerData.originalDuration)
-              setOriginalTimerDuration(timerData.originalDuration)
-            }
-            
-            // Only update if the calculated remaining time is different from current state
-            if (Math.abs(remaining - timerDuration) > 1) { // Allow 1 second tolerance
-              console.log("🔄 [COMPONENT_MOUNT] Updating timer duration to sync with localStorage")
-              setTimerDuration(remaining)
-            }
+          console.log("🔄 [COMPONENT_MOUNT] Syncing validated timer on mount:", {
+            originalDuration: timerData.duration,
+            elapsed,
+            remaining,
+            currentTimerDuration: timerDuration,
+            startTime: new Date(timerData.startTime).toISOString(),
+            savedOriginalDuration: timerData.originalDuration
+          })
+          
+          // Update original duration if we have it from localStorage
+          if (timerData.originalDuration && timerData.originalDuration !== originalTimerDuration) {
+            console.log("🔄 [COMPONENT_MOUNT] Updating original duration from localStorage:", timerData.originalDuration)
+            setOriginalTimerDuration(timerData.originalDuration)
+          }
+          
+          // Only update if the calculated remaining time is different from current state
+          if (Math.abs(remaining - timerDuration) > 1) { // Allow 1 second tolerance
+            console.log("🔄 [COMPONENT_MOUNT] Updating timer duration to sync with localStorage")
+            setTimerDuration(remaining)
+          }
+          
+          // Set the timer as running and description
+          setIsTimerRunning(true)
+          setTimerDescription(timerData.sessionGoals || "")
+          
+          // If timer has expired, mark it as stopped
+          if (remaining <= 0) {
+            console.log("⏰ [COMPONENT_MOUNT] Timer expired during sync, stopping timer")
+            setIsTimerRunning(false)
+            clearTimerFromLocalStorage()
+          }
+        } else if (!timerData.isRunning) {
+          // Timer is not running, set up from saved data but don't start it
+          setTimerDescription(timerData.description || "")
+          if (timerData.originalDuration) {
+            setOriginalTimerDuration(timerData.originalDuration)
           }
         }
-      } catch (e) {
-        console.warn("Failed to sync timer on mount:", e)
       }
     }
-  }, [roomCode]) // Only run once on mount
+  }, [roomCode, validateTimerFromLocalStorage]) // Include validateTimerFromLocalStorage in dependencies
 
   // Effect to periodically sync timer for running timers
   useEffect(() => {
@@ -1774,53 +1898,94 @@ const fetchLectures = async () => {
       }
       
       if (typeof window !== "undefined" && roomCode) {
-        try {
-          const saved = localStorage.getItem(`timer_${roomCode}`)
-          if (!saved) {
-            // If localStorage is cleared, timer was stopped
-            console.log("🛑 [TIMER_SYNC] No timer data in localStorage, timer was stopped")
-            if (isTimerRunning) {
-              setIsTimerRunning(false)
-            }
-            return
+        // Use validation function to get timer data
+        const timerData = validateTimerFromLocalStorage()
+        
+        if (!timerData) {
+          // If validation failed or no timer data, timer was stopped
+          console.log("🛑 [TIMER_SYNC] No valid timer data, timer was stopped")
+          if (isTimerRunning) {
+            setIsTimerRunning(false)
+          }
+          return
+        }
+        
+        if (timerData.isRunning && timerData.startTime) {
+          const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
+          const remaining = Math.max(0, timerData.duration - elapsed)
+          
+          // Only update if there's a significant difference (more than 2 seconds)
+          if (Math.abs(remaining - timerDuration) > 2) {
+            console.log("🔄 [TIMER_SYNC] Periodic sync updating timer duration:", {
+              current: timerDuration,
+              calculated: remaining,
+              difference: Math.abs(remaining - timerDuration)
+            })
+            setTimerDuration(remaining)
           }
           
-          const timerData = JSON.parse(saved)
-          
-          if (timerData.isRunning && timerData.startTime) {
-            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-            const remaining = Math.max(0, timerData.duration - elapsed)
-            
-            // Only update if there's a significant difference (more than 2 seconds)
-            if (Math.abs(remaining - timerDuration) > 2) {
-              console.log("🔄 [TIMER_SYNC] Periodic sync updating timer duration:", {
-                current: timerDuration,
-                calculated: remaining,
-                difference: Math.abs(remaining - timerDuration)
-              })
-              setTimerDuration(remaining)
-            }
-            
-            // If timer has finished, stop it
-            if (remaining <= 0 && isTimerRunning) {
-              console.log("🛑 [TIMER_SYNC] Timer finished during sync")
-              setIsTimerRunning(false)
-              clearTimerFromLocalStorage()
-            }
-          } else if (!timerData.isRunning) {
-            // Timer is marked as not running in localStorage
-            console.log("🛑 [TIMER_SYNC] Timer marked as stopped in localStorage")
-            if (isTimerRunning) {
-              setIsTimerRunning(false)
-            }
+          // If timer has finished, stop it
+          if (remaining <= 0 && isTimerRunning) {
+            console.log("🛑 [TIMER_SYNC] Timer finished during sync")
+            setIsTimerRunning(false)
+            clearTimerFromLocalStorage()
           }
-        } catch (e) {
-          console.warn("Failed to sync timer during periodic check:", e)
+        } else if (!timerData.isRunning) {
+          // Timer is marked as not running in localStorage
+          console.log("🛑 [TIMER_SYNC] Timer marked as stopped in localStorage")
+          if (isTimerRunning) {
+            setIsTimerRunning(false)
+          }
         }
       }
     }, 1000) // Check every second
 
-    return () => clearInterval(syncInterval)  }, [isTimerRunning, timerDuration, roomCode, clearTimerFromLocalStorage])
+    return () => clearInterval(syncInterval)  }, [isTimerRunning, timerDuration, roomCode, clearTimerFromLocalStorage, validateTimerFromLocalStorage])
+
+  // Effect to handle tab focus/visibility changes - clean up stale timer data
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && typeof window !== "undefined" && roomCode) {
+        console.log("👁️ [TAB_FOCUS] Tab became visible, validating timer data");
+        
+        // Validate timer data when tab becomes visible to catch any stale data
+        const timerData = validateTimerFromLocalStorage()
+        
+        // If validation failed, ensure timer state is reset
+        if (!timerData && isTimerRunning) {
+          console.log("🧹 [TAB_FOCUS] No valid timer data found but timer is running, stopping timer");
+          setIsTimerRunning(false)
+          setTimerDuration(25 * 60)
+          setTimerDescription("")
+          setOriginalTimerDuration(25 * 60)
+        }
+      }
+    }
+
+    const handleFocus = () => {
+      if (typeof window !== "undefined" && roomCode) {
+        console.log("🎯 [WINDOW_FOCUS] Window focused, validating timer data");
+        
+        // Double-check timer data validity on window focus
+        const timerData = validateTimerFromLocalStorage()
+        if (!timerData && isTimerRunning) {
+          console.log("🧹 [WINDOW_FOCUS] Cleaning up invalid timer state");
+          setIsTimerRunning(false)
+          setTimerDuration(25 * 60) 
+          setTimerDescription("")
+          setOriginalTimerDuration(25 * 60)
+        }
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', handleFocus)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [roomCode, isTimerRunning, validateTimerFromLocalStorage])
 
   // Function to add study time via API
   const addStudyTime = async (timeInMinutes: number, sessionType: 'study' | 'practice') => {
@@ -1944,16 +2109,19 @@ const fetchLectures = async () => {
       if (response.ok) {
         console.log("✅ [TOGGLE_GOAL] Goal toggled successfully on server");
         
-        // Refetch goals from server to ensure UI is in sync
-       // await getGoalsFromServer();
+        // Optimistically update the local state
+        setSessionGoals(prevGoals => 
+          prevGoals.map(goal => 
+            goal.id === goalId ? { ...goal, done: !goal.done } : goal
+          )
+        );
         
-       
       } else {
         const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
         console.error("❌ [TOGGLE_GOAL] Failed to toggle goal:", errorData);
         toast({
           title: "Error",
-          description: `Failed to update goal: ${errorData.message}`,
+          description: `Failed to toggle goal: ${errorData.message}`,
           variant: "destructive"
         });
       }
@@ -1961,64 +2129,7 @@ const fetchLectures = async () => {
       console.error("❌ [TOGGLE_GOAL] Network error:", error);
       toast({
         title: "Error",
-        description: "Failed to update goal. Please check your connection.",
-        variant: "destructive"
-      });
-    }
-  }
-
-
-
-  const getGoalsFromServer = async () => {
-    if (!user || !roomCode) {
-      console.warn("⚠️ [FETCH_GOALS] Cannot fetch goals: missing user or room code");
-      return;
-    }
-
-    console.log("📡 [FETCH_GOALS] Fetching goals from server", { roomCode, user: user.name });
-
-    try {
-      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/all"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${user.access_token}`,
-        },
-        body: JSON.stringify({ roomJoinCode: roomCode }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log("✅ [FETCH_GOALS] Goals fetched successfully:", data);
-        
-        if (data && Array.isArray(data)) {
-          const sessionGoals = data.map((goal: any) => ({
-            id: goal.id,
-            text: goal.goalTitle || goal.title || "",
-            done: goal.done || false,
-            duration: {
-              hours: goal.hours || 0,
-              minutes: goal.minutes || 0
-            }
-          }));
-          
-          setSessionGoals(sessionGoals);
-          console.log("📝 [FETCH_GOALS] Updated session goals:", sessionGoals);
-        }
-      } else {
-        const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
-        console.error("❌ [FETCH_GOALS] Failed to fetch goals:", errorData);
-        toast({
-          title: "Error",
-          description: `Failed to fetch goals: ${errorData.message}`,
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error("❌ [FETCH_GOALS] Network error:", error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch goals. Please check your connection.",
+        description: "Failed to toggle goal. Please check your connection.",
         variant: "destructive"
       });
     }
