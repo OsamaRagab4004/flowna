@@ -28,6 +28,25 @@ import "@/styles/strategic-mind.css"; // Import the new CSS file
 import { LectureList } from "@/components/lecture-list";
 import { SessionList } from "@/components/session-list";
 import { getApiUrl } from '@/lib/api';
+import { usePageTitle } from '@/hooks/use-page-title';
+
+// Utility function to calculate remaining time for timer
+const calculateRemainingTime = (startTime: number, originalDuration: number): number => {
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  return Math.max(0, originalDuration - elapsed);
+};
+
+// Utility function to format time as MM:SS or HH:MM:SS
+const formatTime = (seconds: number): string => {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+};
 
 export default function Lobby({ params }: { params: Promise<{ roomCode: string }> }) {
   const router = useRouter()
@@ -135,6 +154,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     }
     return false
   })
+
+  // State to force re-renders for timer badge updates
+  const [timerTick, setTimerTick] = useState(0);
     const [lectures, setLectures] = useState<{
     lectureId: number; title: string; creationTime: string 
 }[]>([]);
@@ -343,6 +365,68 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   }
 
   const username = user?.name || getLocalName()
+
+  // Calculate current remaining time for timer badge and page title
+  const currentRemainingTime = useMemo(() => {
+    if (!isTimerRunning) return timerDuration;
+    
+    try {
+      const saved = localStorage.getItem(`timer_${roomCode}`);
+      if (saved) {
+        const timerData = JSON.parse(saved);
+        if (timerData.startTime && timerData.originalDuration) {
+          return calculateRemainingTime(timerData.startTime, timerData.originalDuration);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to calculate remaining time:", e);
+    }
+    
+    return timerDuration;
+  }, [isTimerRunning, timerDuration, roomCode, timerTick]);
+
+  // Update page title with timer
+  const pageTitle = useMemo(() => {
+    if (isTimerRunning && currentRemainingTime > 0) {
+      return `${formatTime(currentRemainingTime)} - Study Room`;
+    }
+    return "Study Room";
+  }, [isTimerRunning, currentRemainingTime]);
+
+  usePageTitle(pageTitle);
+
+  // Update timer state and page title every second when timer is running
+  useEffect(() => {
+    if (!isTimerRunning) return;
+
+    const interval = setInterval(() => {
+      try {
+        const saved = localStorage.getItem(`timer_${roomCode}`);
+        if (saved) {
+          const timerData = JSON.parse(saved);
+          if (timerData.startTime && timerData.originalDuration) {
+            const remaining = calculateRemainingTime(timerData.startTime, timerData.originalDuration);
+            // Force re-render by updating timerTick state
+            setTimerTick(prev => prev + 1);
+            
+            // Update timerDuration state if it's significantly different
+            if (Math.abs(remaining - timerDuration) > 1) {
+              setTimerDuration(remaining);
+            }
+            
+            if (remaining === 0) {
+              // Timer finished, stop the interval
+              clearInterval(interval);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to update timer state:", e);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isTimerRunning, roomCode, timerDuration]);
 
   // Memoize chat-related data to prevent unnecessary re-renders
   const chatData = useMemo(() => ({
@@ -589,22 +673,23 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   }, [roomCode])
 
   // Function to validate timer localStorage data
-  const validateTimerFromLocalStorage = useCallback(() => {
+  const validateTimerFromLocalStorage = useCallback((skipUserValidation = false) => {
     if (typeof window !== "undefined" && roomCode) {
       try {
         const saved = localStorage.getItem(`timer_${roomCode}`)
         if (saved) {
           const timerData = JSON.parse(saved)
           
-          // Validate that the timer data belongs to current room and user
+          // Validate that the timer data belongs to current room
           if (timerData.roomCode !== roomCode) {
             console.warn("🚨 [TIMER_VALIDATION] Timer data from different room, clearing:", timerData.roomCode, "vs", roomCode)
             clearTimerFromLocalStorage()
             return null
           }
           
-          if (timerData.username && timerData.username !== user?.name) {
-            console.warn("🚨 [TIMER_VALIDATION] Timer data from different user, clearing:", timerData.username, "vs", user?.name)
+          // Only validate username if user is available and we're not skipping validation
+          if (!skipUserValidation && user?.name && timerData.username && timerData.username !== user.name) {
+            console.warn("🚨 [TIMER_VALIDATION] Timer data from different user, clearing:", timerData.username, "vs", user.name)
             clearTimerFromLocalStorage()
             return null
           }
@@ -976,7 +1061,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         reconnectAttemptRef.current = 0
         
         // Preserve timer state during reconnection
-        const existingTimerData = validateTimerFromLocalStorage()
+        const existingTimerData = validateTimerFromLocalStorage(true)
         if (existingTimerData && existingTimerData.isRunning) {
           console.log("🔄 [CONNECTION] Preserving timer state during reconnection:", {
             description: existingTimerData.description,
@@ -2009,7 +2094,8 @@ const fetchLectures = async () => {
     if (typeof window !== "undefined" && roomCode && !isTimerInitialized.current) {
       console.log("🔄 [TIMER_INIT] Checking timer state on component mount")
       
-      const timerData = validateTimerFromLocalStorage()
+      // Skip user validation during initialization since user context may not be ready
+      const timerData = validateTimerFromLocalStorage(true)
       
       if (timerData) {
         console.log("🔄 [TIMER_INIT] Found existing timer data:", timerData)
@@ -2157,16 +2243,20 @@ const fetchLectures = async () => {
         
         // Only validate after a short delay to avoid interfering with initialization
         setTimeout(() => {
-          // Validate timer data when tab becomes visible to catch any stale data
-          const timerData = validateTimerFromLocalStorage()
-          
-          // If validation failed, ensure timer state is reset
-          if (!timerData && isTimerRunning) {
-            console.log("🧹 [TAB_FOCUS] No valid timer data found but timer is running, stopping timer");
-            setIsTimerRunning(false)
-            setTimerDuration(25 * 60)
-            setTimerDescription("")
-            setOriginalTimerDuration(25 * 60)
+          // Only validate timer data if user is available to avoid false positives
+          if (user?.name) {
+            const timerData = validateTimerFromLocalStorage()
+            
+            // If validation failed, ensure timer state is reset
+            if (!timerData && isTimerRunning) {
+              console.log("🧹 [TAB_FOCUS] No valid timer data found but timer is running, stopping timer");
+              setIsTimerRunning(false)
+              setTimerDuration(25 * 60)
+              setTimerDescription("")
+              setOriginalTimerDuration(25 * 60)
+            }
+          } else {
+            console.log("👁️ [TAB_FOCUS] User not available, skipping validation");
           }
         }, 500) // Wait 500ms to avoid race conditions with initialization
       }
@@ -2175,17 +2265,20 @@ const fetchLectures = async () => {
     const handleFocus = () => {
       if (typeof window !== "undefined" && roomCode && isTimerInitialized.current) {
         console.log("🎯 [WINDOW_FOCUS] Window focused, validating timer data");
-        
-        // Only validate after a short delay to avoid interfering with initialization
+          // Only validate after a short delay to avoid interfering with initialization
         setTimeout(() => {
-          // Double-check timer data validity on window focus
-          const timerData = validateTimerFromLocalStorage()
-          if (!timerData && isTimerRunning) {
-            console.log("🧹 [WINDOW_FOCUS] Cleaning up invalid timer state");
-            setIsTimerRunning(false)
-            setTimerDuration(25 * 60) 
-            setTimerDescription("")
-            setOriginalTimerDuration(25 * 60)
+          // Only validate timer data if user is available to avoid false positives
+          if (user?.name) {
+            const timerData = validateTimerFromLocalStorage()
+            if (!timerData && isTimerRunning) {
+              console.log("🧹 [WINDOW_FOCUS] Cleaning up invalid timer state");
+              setIsTimerRunning(false)
+              setTimerDuration(25 * 60)
+              setTimerDescription("")
+              setOriginalTimerDuration(25 * 60)
+            }
+          } else {
+            console.log("🎯 [WINDOW_FOCUS] User not available, skipping validation");
           }
         }, 500) // Wait 500ms to avoid race conditions with initialization
       }
@@ -3073,11 +3166,21 @@ const fetchLectures = async () => {
                 <span className={`text-xs font-medium mt-1 ${visibleTabs.has('timer') ? 'text-white' : 'text-gray-600'}`}>
                   Timer
                 </span>
-                {/* Timer running indicator */}
+                {/* Timer running indicator and remaining time badge */}
                 {isTimerRunning && (
-                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center animate-pulse">
-                    <div className="w-2 h-2 bg-white rounded-full"></div>
-                  </div>
+                  <>
+                    {currentRemainingTime > 0 ? (
+                      <div className="absolute -top-2 -right-2 bg-purple-600 rounded-lg flex items-center justify-center shadow-lg border-2 border-white px-1 py-0.5">
+                        <span className="text-white text-xs font-bold leading-none whitespace-nowrap">
+                          {formatTime(currentRemainingTime)}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center animate-pulse">
+                        <div className="w-2 h-2 bg-white rounded-full"></div>
+                      </div>
+                    )}
+                  </>
                 )}
               </button>
             </div>
