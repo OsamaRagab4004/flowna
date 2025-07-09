@@ -141,7 +141,7 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       },
       heartbeatIncoming: 0, // Disable heartbeats completely
       heartbeatOutgoing: 0, // Disable heartbeats completely
-      reconnectDelay: 2000, // Slightly longer reconnection delay
+      reconnectDelay: 500, 
       onStompError: (frame) => {
         console.error("STOMP Error:", frame.headers['message'], frame.body);
         setIsConnected(false);
@@ -415,7 +415,7 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
         },
         heartbeatIncoming: 0, // Disable heartbeats completely
         heartbeatOutgoing: 0, // Disable heartbeats completely
-        reconnectDelay: 2000, // Slightly longer delay for stability
+        reconnectDelay: 500, 
         onStompError: (frame) => {
           console.error("STOMP Error:", frame.headers['message'], frame.body);
           setIsConnected(false);
