@@ -59,6 +59,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const [showTimer, setShowTimer] = useState(false) // Timer modal state
   const [showStudyGoal, setShowStudyGoal] = useState(false) // Study goal modal state
   const isCleaningUpTimer = useRef(false) // Flag to prevent conflicts during timer cleanup
+  const isTimerInitialized = useRef(false) // Flag to track timer initialization per component instance
   const [timerDuration, setTimerDuration] = useState(() => {
     // Initialize from localStorage if available
     if (typeof window !== "undefined") {
@@ -110,6 +111,22 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         const saved = localStorage.getItem(`timer_${roomCode}`)
         if (saved) {
           const timerData = JSON.parse(saved)
+          
+          // Only set as running if timer is actually still running (has remaining time)
+          if (timerData.isRunning && timerData.startTime && timerData.originalDuration) {
+            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
+            const remaining = Math.max(0, timerData.originalDuration - elapsed)
+            
+            // Only consider timer as running if there's time remaining
+            if (remaining > 0) {
+              console.log("🔄 [TIMER_INIT_STATE] Timer still running with remaining time:", remaining)
+              return true
+            } else {
+              console.log("🛑 [TIMER_INIT_STATE] Timer finished during initialization, marking as stopped")
+              return false
+            }
+          }
+          
           return timerData.isRunning || false
         }
       } catch (e) {
@@ -1989,7 +2006,7 @@ const fetchLectures = async () => {
 
   // Effect to check and sync timer state on component mount
   useEffect(() => {
-    if (typeof window !== "undefined" && roomCode) {
+    if (typeof window !== "undefined" && roomCode && !isTimerInitialized.current) {
       console.log("🔄 [TIMER_INIT] Checking timer state on component mount")
       
       const timerData = validateTimerFromLocalStorage()
@@ -2011,10 +2028,15 @@ const fetchLectures = async () => {
           
           if (remaining > 0) {
             // Timer is still running, restore its state
+            console.log("✅ [TIMER_INIT] Restoring running timer state")
             setTimerDuration(remaining)
             setTimerDescription(timerData.description || "")
             setIsTimerRunning(true)
             setOriginalTimerDuration(timerData.originalDuration)
+            
+            // Ensure timer tab is visible when timer is restored
+            setVisibleTabs(prev => new Set([...prev, 'timer']))
+            
             console.log("✅ [TIMER_INIT] Timer state restored with remaining time:", remaining)
           } else {
             // Timer has finished, clean up
@@ -2036,12 +2058,16 @@ const fetchLectures = async () => {
       } else {
         console.log("🔄 [TIMER_INIT] No existing timer data found")
       }
+      
+      // Mark timer as initialized to prevent further initialization attempts
+      isTimerInitialized.current = true
     }
-  }, [roomCode, validateTimerFromLocalStorage, clearTimerFromLocalStorage])
+  }, [roomCode, validateTimerFromLocalStorage, clearTimerFromLocalStorage, toast, setVisibleTabs])
 
   // Effect to periodically sync timer for running timers
   useEffect(() => {
-    if (!isTimerRunning || isCleaningUpTimer.current) return
+    // Wait for timer initialization to complete before starting sync
+    if (!isTimerRunning || isCleaningUpTimer.current || !isTimerInitialized.current) return
 
     const syncInterval = setInterval(() => {
       // Double-check the cleanup flag inside the interval
