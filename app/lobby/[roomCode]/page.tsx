@@ -1572,7 +1572,7 @@ const fetchLectures = async () => {
     console.log("📡 [FETCH_GOALS] Fetching goals from server", { roomCode, user: user.name });
 
     try {
-      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/get"), {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/all"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
