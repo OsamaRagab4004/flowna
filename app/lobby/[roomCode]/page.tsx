@@ -70,9 +70,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
           // If timer is running, calculate the remaining time
           if (timerData.isRunning && timerData.startTime) {
             const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-            const remaining = Math.max(0, timerData.duration - elapsed)
+            const remaining = Math.max(0, (timerData.originalDuration || timerData.duration) - elapsed)
             console.log("🔄 [TIMER_INIT] Calculated remaining time from localStorage:", {
-              originalDuration: timerData.duration,
+              originalDuration: timerData.originalDuration || timerData.duration,
               elapsed,
               remaining,
               startTime: new Date(timerData.startTime).toISOString()
@@ -494,11 +494,16 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
     console.log("🚪 [LEAVE_ROOM] Leaving room:", { roomCode, user: user.name });
 
-    // Clean up timer localStorage when leaving room to prevent confusion
-    console.log("🧹 [LEAVE_ROOM] Cleaning up timer localStorage");
-    clearTimerFromLocalStorage();
+    // Only clean up timer localStorage when NOT reloading the page
+    // During page reload, we want to preserve timer state for reconnection
+    if (!isReload.current) {
+      console.log("🧹 [LEAVE_ROOM] Cleaning up timer localStorage (not a reload)");
+      clearTimerFromLocalStorage();
+    } else {
+      console.log("🔄 [LEAVE_ROOM] Page reload detected, preserving timer state");
+    }
 
-    if (isReload) {
+    if (isReload.current) {
       console.log("🔄 [LEAVE_ROOM] Page reload detected, setting needsRejoin flag");
       setNeedsRejoin(true);
     }
@@ -617,34 +622,75 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   }) => {
     console.log("🔔 [TIMER_STARTED] Received timer data from server:", timerData)
     
+    // Check if we already have a running timer from localStorage
+    const existingTimerData = validateTimerFromLocalStorage()
+    
+    if (existingTimerData && existingTimerData.isRunning) {
+      console.log("🔄 [TIMER_STARTED] Already have running timer from localStorage, preserving state")
+      
+      // Calculate remaining time from existing timer
+      const elapsed = Math.floor((Date.now() - existingTimerData.startTime) / 1000)
+      const remainingTime = Math.max(0, existingTimerData.originalDuration - elapsed)
+      
+      console.log("🔄 [TIMER_STARTED] Preserving existing timer state:", {
+        existingStartTime: new Date(existingTimerData.startTime).toISOString(),
+        elapsed,
+        originalDuration: existingTimerData.originalDuration,
+        remainingTime
+      })
+      
+      // Only update if timer is still running
+      if (remainingTime > 0) {
+        setTimerDuration(remainingTime)
+        setTimerDescription(existingTimerData.description || "")
+        setIsTimerRunning(true)
+        setOriginalTimerDuration(existingTimerData.originalDuration)
+        
+        // Automatically open timer tab when timer starts for all users
+        setVisibleTabs(prev => new Set([...prev, 'timer']))
+        return
+      } else {
+        // Timer has finished, clean up
+        console.log("🛑 [TIMER_STARTED] Existing timer has finished, cleaning up")
+        clearTimerFromLocalStorage()
+      }
+    }
+    
+    // No existing timer or it has finished, use server data
     const serverStartTime = timerData.startTime || Date.now()
     const elapsed = Math.floor((Date.now() - serverStartTime) / 1000)
     const remainingTime = Math.max(0, timerData.timerDurationInSeconds - elapsed)
     
-    console.log("🔔 [TIMER_STARTED] Timer sync calculation:", {
+    console.log("🔔 [TIMER_STARTED] Using server timer data:", {
       serverStartTime: new Date(serverStartTime).toISOString(),
       elapsed,
       originalDuration: timerData.timerDurationInSeconds,
       remainingTime
     })
     
-    // Update all timer states from server with calculated remaining time
-    setTimerDuration(remainingTime)
-    setTimerDescription(timerData.sessionGoals || "")
-    setIsTimerRunning(timerData.timerEnabled)
-    setOriginalTimerDuration(timerData.timerDurationInSeconds)
-    
-    // Save timer state to localStorage when timer starts
-    saveTimerToLocalStorage(timerData.timerDurationInSeconds, timerData.sessionGoals || "", timerData.timerEnabled, serverStartTime, timerData.timerDurationInSeconds)
-    
-    // Automatically open timer tab when timer starts for all users
-    setVisibleTabs(prev => new Set([...prev, 'timer']))
-    
-    toast({
-      title: "Timer Started",
-      description: `Study timer started for ${Math.floor(timerData.timerDurationInSeconds / 60)} minutes`,
-    })
-  }, [toast, saveTimerToLocalStorage, setVisibleTabs])
+    // Only start timer if there's time remaining
+    if (remainingTime > 0) {
+      // Update all timer states from server with calculated remaining time
+      setTimerDuration(remainingTime)
+      setTimerDescription(timerData.sessionGoals || "")
+      setIsTimerRunning(timerData.timerEnabled)
+      setOriginalTimerDuration(timerData.timerDurationInSeconds)
+      
+      // Save timer state to localStorage when timer starts
+      saveTimerToLocalStorage(timerData.timerDurationInSeconds, timerData.sessionGoals || "", timerData.timerEnabled, serverStartTime, timerData.timerDurationInSeconds)
+      
+      // Automatically open timer tab when timer starts for all users
+      setVisibleTabs(prev => new Set([...prev, 'timer']))
+      
+      toast({
+        title: "Timer Started",
+        description: `Study timer started for ${Math.floor(timerData.timerDurationInSeconds / 60)} minutes`,
+      })
+    } else {
+      console.log("🛑 [TIMER_STARTED] Server timer has no remaining time, not starting")
+      clearTimerFromLocalStorage()
+    }
+  }, [toast, saveTimerToLocalStorage, setVisibleTabs, validateTimerFromLocalStorage, clearTimerFromLocalStorage])
 
   // Function to handle timer stopped event from server
   const handleTimerStoppedFromServer = useCallback((timerData: { 
@@ -912,6 +958,37 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         connectionLostRef.current = false
         reconnectAttemptRef.current = 0
         
+        // Preserve timer state during reconnection
+        const existingTimerData = validateTimerFromLocalStorage()
+        if (existingTimerData && existingTimerData.isRunning) {
+          console.log("🔄 [CONNECTION] Preserving timer state during reconnection:", {
+            description: existingTimerData.description,
+            startTime: new Date(existingTimerData.startTime).toISOString(),
+            originalDuration: existingTimerData.originalDuration
+          })
+          
+          // Calculate remaining time
+          const elapsed = Math.floor((Date.now() - existingTimerData.startTime) / 1000)
+          const remaining = Math.max(0, existingTimerData.originalDuration - elapsed)
+          
+          if (remaining > 0) {
+            // Timer is still running, preserve its state
+            setTimerDuration(remaining)
+            setTimerDescription(existingTimerData.description || "")
+            setIsTimerRunning(true)
+            setOriginalTimerDuration(existingTimerData.originalDuration)
+            console.log("🔄 [CONNECTION] Timer state preserved with remaining time:", remaining)
+          } else {
+            // Timer has finished during disconnection
+            console.log("🛑 [CONNECTION] Timer finished during disconnection, cleaning up")
+            clearTimerFromLocalStorage()
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+          }
+        }
+        
         // Refetch room data after reconnection immediately
         fetchRoomMembers()
         fetchRoomMessages()
@@ -1042,9 +1119,12 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         console.log("Unsubscribed from STOMP topic.")
       }
       
-      // Clean up timer localStorage on component unmount to prevent confusion
-      console.log("🧹 [COMPONENT_UNMOUNT] Cleaning up timer localStorage")
-      clearTimerFromLocalStorage()
+      // IMPORTANT: Do NOT clear timer localStorage on component unmount
+      // Timer should persist across reconnections and only be cleared when:
+      // 1. Timer actually finishes (handled in timer sync logic)
+      // 2. Timer is stopped by host (handled in server events)
+      // 3. User manually leaves room (handled in leaveRoom function)
+      console.log("🔄 [COMPONENT_UNMOUNT] Component unmounting, preserving timer state for reconnection")
     }
   }, [
     user,
@@ -1167,9 +1247,12 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         // This is a more reliable place for leave actions if `beforeunload` is tricky
         if (user && hasManuallyLeftRef.current === false) {
              console.log("🚪 [UNLOAD] Tab/window closing, calling leaveRoom");
-             // Clean up timer localStorage before leaving
+             // Clean up timer localStorage before leaving (user is closing tab/window)
              console.log("🧹 [UNLOAD] Cleaning up timer localStorage before leaving");
              clearTimerFromLocalStorage();
+             
+             // Mark as not a reload to ensure leaveRoom doesn't prevent cleanup
+             isReload.current = false;
              leaveRoom();
         }
     };
@@ -1907,45 +1990,40 @@ const fetchLectures = async () => {
   // Effect to check and sync timer state on component mount
   useEffect(() => {
     if (typeof window !== "undefined" && roomCode) {
-      // Use validation function to get timer data
+      console.log("🔄 [TIMER_INIT] Checking timer state on component mount")
+      
       const timerData = validateTimerFromLocalStorage()
       
       if (timerData) {
-        // If timer is running, ensure we have the correct remaining time
+        console.log("🔄 [TIMER_INIT] Found existing timer data:", timerData)
+        
         if (timerData.isRunning && timerData.startTime) {
+          // Timer is running, calculate remaining time
           const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-          const remaining = Math.max(0, timerData.duration - elapsed)
+          const remaining = Math.max(0, timerData.originalDuration - elapsed)
           
-          console.log("🔄 [COMPONENT_MOUNT] Syncing validated timer on mount:", {
-            originalDuration: timerData.duration,
+          console.log("🔄 [TIMER_INIT] Timer running calculation:", {
             elapsed,
+            originalDuration: timerData.originalDuration,
             remaining,
-            currentTimerDuration: timerDuration,
-            startTime: new Date(timerData.startTime).toISOString(),
-            savedOriginalDuration: timerData.originalDuration
+            startTime: new Date(timerData.startTime).toISOString()
           })
           
-          // Update original duration if we have it from localStorage
-          if (timerData.originalDuration && timerData.originalDuration !== originalTimerDuration) {
-            console.log("🔄 [COMPONENT_MOUNT] Updating original duration from localStorage:", timerData.originalDuration)
-            setOriginalTimerDuration(timerData.originalDuration)
-          }
-          
-          // Only update if the calculated remaining time is different from current state
-          if (Math.abs(remaining - timerDuration) > 1) { // Allow 1 second tolerance
-            console.log("🔄 [COMPONENT_MOUNT] Updating timer duration to sync with localStorage")
+          if (remaining > 0) {
+            // Timer is still running, restore its state
             setTimerDuration(remaining)
-          }
-          
-          // Set the timer as running and description
-          setIsTimerRunning(true)
-          setTimerDescription(timerData.sessionGoals || "")
-          
-          // If timer has expired, mark it as stopped
-          if (remaining <= 0) {
-            console.log("⏰ [COMPONENT_MOUNT] Timer expired during sync, stopping timer")
-            setIsTimerRunning(false)
+            setTimerDescription(timerData.description || "")
+            setIsTimerRunning(true)
+            setOriginalTimerDuration(timerData.originalDuration)
+            console.log("✅ [TIMER_INIT] Timer state restored with remaining time:", remaining)
+          } else {
+            // Timer has finished, clean up
+            console.log("� [TIMER_INIT] Timer has finished, cleaning up")
             clearTimerFromLocalStorage()
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
           }
         } else if (!timerData.isRunning) {
           // Timer is not running, set up from saved data but don't start it
@@ -1953,10 +2031,13 @@ const fetchLectures = async () => {
           if (timerData.originalDuration) {
             setOriginalTimerDuration(timerData.originalDuration)
           }
+          console.log("🔄 [TIMER_INIT] Timer not running, loaded description and duration")
         }
+      } else {
+        console.log("🔄 [TIMER_INIT] No existing timer data found")
       }
     }
-  }, [roomCode, validateTimerFromLocalStorage]) // Include validateTimerFromLocalStorage in dependencies
+  }, [roomCode, validateTimerFromLocalStorage, clearTimerFromLocalStorage])
 
   // Effect to periodically sync timer for running timers
   useEffect(() => {
@@ -1978,13 +2059,16 @@ const fetchLectures = async () => {
           console.log("🛑 [TIMER_SYNC] No valid timer data, timer was stopped")
           if (isTimerRunning) {
             setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
           }
           return
         }
         
         if (timerData.isRunning && timerData.startTime) {
           const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-          const remaining = Math.max(0, timerData.duration - elapsed)
+          const remaining = Math.max(0, timerData.originalDuration - elapsed)
           
           // Only update if there's a significant difference (more than 2 seconds)
           if (Math.abs(remaining - timerDuration) > 2) {
@@ -1996,23 +2080,48 @@ const fetchLectures = async () => {
             setTimerDuration(remaining)
           }
           
-          // If timer has finished, stop it
+          // If timer has finished, stop it and clean up localStorage
           if (remaining <= 0 && isTimerRunning) {
-            console.log("🛑 [TIMER_SYNC] Timer finished during sync")
+            console.log("🛑 [TIMER_SYNC] Timer finished during sync - cleaning up completely")
+            
+            // Set cleanup flag to prevent race conditions
+            isCleaningUpTimer.current = true
+            
+            // Stop timer and reset all states
             setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+            
+            // Clear localStorage
             clearTimerFromLocalStorage()
+            
+            // Show timer finished notification
+            toast({
+              title: "Timer Finished",
+              description: "Study timer has completed!",
+            })
+            
+            // Reset cleanup flag after a short delay
+            setTimeout(() => {
+              isCleaningUpTimer.current = false
+            }, 1000)
           }
         } else if (!timerData.isRunning) {
           // Timer is marked as not running in localStorage
           console.log("🛑 [TIMER_SYNC] Timer marked as stopped in localStorage")
           if (isTimerRunning) {
             setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
           }
         }
       }
     }, 1000) // Check every second
 
-    return () => clearInterval(syncInterval)  }, [isTimerRunning, timerDuration, roomCode, clearTimerFromLocalStorage, validateTimerFromLocalStorage])
+    return () => clearInterval(syncInterval)
+  }, [isTimerRunning, timerDuration, roomCode, clearTimerFromLocalStorage, validateTimerFromLocalStorage, toast])
 
   // Effect to handle tab focus/visibility changes - clean up stale timer data
   useEffect(() => {
