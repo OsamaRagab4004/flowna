@@ -2152,36 +2152,42 @@ const fetchLectures = async () => {
   // Effect to handle tab focus/visibility changes - clean up stale timer data
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (!document.hidden && typeof window !== "undefined" && roomCode) {
+      if (!document.hidden && typeof window !== "undefined" && roomCode && isTimerInitialized.current) {
         console.log("👁️ [TAB_FOCUS] Tab became visible, validating timer data");
         
-        // Validate timer data when tab becomes visible to catch any stale data
-        const timerData = validateTimerFromLocalStorage()
-        
-        // If validation failed, ensure timer state is reset
-        if (!timerData && isTimerRunning) {
-          console.log("🧹 [TAB_FOCUS] No valid timer data found but timer is running, stopping timer");
-          setIsTimerRunning(false)
-          setTimerDuration(25 * 60)
-          setTimerDescription("")
-          setOriginalTimerDuration(25 * 60)
-        }
+        // Only validate after a short delay to avoid interfering with initialization
+        setTimeout(() => {
+          // Validate timer data when tab becomes visible to catch any stale data
+          const timerData = validateTimerFromLocalStorage()
+          
+          // If validation failed, ensure timer state is reset
+          if (!timerData && isTimerRunning) {
+            console.log("🧹 [TAB_FOCUS] No valid timer data found but timer is running, stopping timer");
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+          }
+        }, 500) // Wait 500ms to avoid race conditions with initialization
       }
     }
 
     const handleFocus = () => {
-      if (typeof window !== "undefined" && roomCode) {
+      if (typeof window !== "undefined" && roomCode && isTimerInitialized.current) {
         console.log("🎯 [WINDOW_FOCUS] Window focused, validating timer data");
         
-        // Double-check timer data validity on window focus
-        const timerData = validateTimerFromLocalStorage()
-        if (!timerData && isTimerRunning) {
-          console.log("🧹 [WINDOW_FOCUS] Cleaning up invalid timer state");
-          setIsTimerRunning(false)
-          setTimerDuration(25 * 60) 
-          setTimerDescription("")
-          setOriginalTimerDuration(25 * 60)
-        }
+        // Only validate after a short delay to avoid interfering with initialization
+        setTimeout(() => {
+          // Double-check timer data validity on window focus
+          const timerData = validateTimerFromLocalStorage()
+          if (!timerData && isTimerRunning) {
+            console.log("🧹 [WINDOW_FOCUS] Cleaning up invalid timer state");
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60) 
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+          }
+        }, 500) // Wait 500ms to avoid race conditions with initialization
       }
     }
 
