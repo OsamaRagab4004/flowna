@@ -1290,6 +1290,28 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
                         console.log("✅ Successfully auto-rejoined room after reload");
                         setNeedsRejoin(false);
                         
+                        // IMPORTANT: Restore timer state from localStorage after successful rejoin
+                        const existingTimerData = validateTimerFromLocalStorage(true);
+                        if (existingTimerData && existingTimerData.isRunning) {
+                          const elapsed = Math.floor((Date.now() - existingTimerData.startTime) / 1000);
+                          const remaining = Math.max(0, existingTimerData.originalDuration - elapsed);
+                          
+                          if (remaining > 0) {
+                            console.log("✅ [PAGE_RELOAD] Timer state restored with remaining time:", remaining);
+                            setTimerDuration(remaining);
+                            setTimerDescription(existingTimerData.description || "");
+                            setIsTimerRunning(true);
+                            setOriginalTimerDuration(existingTimerData.originalDuration);
+                            
+                            // Automatically open timer tab when timer is restored
+                            setVisibleTabs(prev => new Set([...prev, 'timer']));
+                          } else {
+                            console.log("🛑 [PAGE_RELOAD] Timer finished during reload, cleaning up");
+                            clearTimerFromLocalStorage();
+                            setIsTimerRunning(false);
+                          }
+                        }
+                        
                         // Robustly wait for STOMP connection and fetch members
                         const waitForStompAndFetch = async (retries = 0, maxRetries = 10) => {
                             if (retries >= maxRetries) {
@@ -1331,7 +1353,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       checkPageReload();
     }
     
-  }, [roomCode, toast, user, loading, router, stompClient, fetchRoomMembers])
+  }, [roomCode, toast, user, loading, router, stompClient, fetchRoomMembers, validateTimerFromLocalStorage, clearTimerFromLocalStorage, setVisibleTabs])
   
   // This new useEffect handles leaving the room automatically when the user closes the tab.
   useEffect(() => {
@@ -1339,23 +1361,27 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       // Set a flag in sessionStorage to indicate a reload is in progress
       // This flag will be checked by the next page load's useEffect
       sessionStorage.setItem(`reloading_${roomCode}`, 'true');
-
-      // This part is for when the user closes the tab/browser, not for reloads
-      // We rely on the browser's cleanup and the server's potential WebSocket disconnect handler
-      // Or for a more robust solution, use sendBeacon as in the modified leaveRoom function.
+      
+      // IMPORTANT: Do NOT clear timer localStorage on page refresh
+      // Timer should persist across page reloads
+      console.log("🔄 [BEFOREUNLOAD] Page refresh detected, preserving timer state");
     };
     
     const handleUnload = () => {
-        // This is a more reliable place for leave actions if `beforeunload` is tricky
-        if (user && hasManuallyLeftRef.current === false) {
-             console.log("🚪 [UNLOAD] Tab/window closing, calling leaveRoom");
-             // Clean up timer localStorage before leaving (user is closing tab/window)
+        // Only clean up if this is NOT a page reload and user manually left
+        const isPageReload = sessionStorage.getItem(`reloading_${roomCode}`) === 'true';
+        
+        if (user && hasManuallyLeftRef.current === false && !isPageReload) {
+             console.log("🚪 [UNLOAD] Tab/window closing (not reload), calling leaveRoom");
+             // Only clean up timer localStorage if user is actually leaving (not refreshing)
              console.log("🧹 [UNLOAD] Cleaning up timer localStorage before leaving");
              clearTimerFromLocalStorage();
              
              // Mark as not a reload to ensure leaveRoom doesn't prevent cleanup
              isReload.current = false;
              leaveRoom();
+        } else if (isPageReload) {
+          console.log("🔄 [UNLOAD] Page reload detected, preserving timer state");
         }
     };
 
@@ -1367,7 +1393,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('unload', handleUnload);
     };
-  }, [leaveRoom, user, roomCode]); 
+  }, [leaveRoom, user, roomCode, clearTimerFromLocalStorage]); 
 
   
 
@@ -2068,15 +2094,25 @@ const fetchLectures = async () => {
     }
   }, [timerDuration, timerDescription, isTimerRunning, saveTimerToLocalStorage])
 
-  // Debug useEffect to track timer state changes
+  // Debug effect to track timer state changes and identify what's causing resets
   useEffect(() => {
-    console.log("🎮 [TIMER_STATE] Timer state changed:", {
+    console.log("🎮 [TIMER_STATE_DEBUG] Timer state changed:", {
       isTimerRunning,
       timerDuration,
       timerDescription,
-      showTimer
+      originalTimerDuration,
+      showTimer,
+      user: user?.name,
+      roomCode,
+      timestamp: new Date().toISOString()
     })
-  }, [isTimerRunning, timerDuration, timerDescription, showTimer])
+    
+    // Log stack trace when timer is stopped unexpectedly
+    if (!isTimerRunning && timerDuration === 25 * 60 && timerDescription === "") {
+      console.log("🚨 [TIMER_RESET_DETECTED] Timer was reset to default state");
+      console.trace("Timer reset stack trace");
+    }
+  }, [isTimerRunning, timerDuration, timerDescription, originalTimerDuration, showTimer, user, roomCode])
 
   // Debug effect to track timer duration changes
   useEffect(() => {
@@ -2088,6 +2124,48 @@ const fetchLectures = async () => {
       user: user?.name
     })
   }, [timerDuration, isHost, user])
+
+  // Enhanced effect to restore timer state on mount - runs early to prevent timer loss
+  useEffect(() => {
+    if (typeof window !== "undefined" && roomCode) {
+      console.log("🔄 [TIMER_EARLY_RESTORE] Attempting early timer state restoration");
+      
+      try {
+        const saved = localStorage.getItem(`timer_${roomCode}`);
+        if (saved) {
+          const timerData = JSON.parse(saved);
+          
+          // Validate basic timer data structure
+          if (timerData.isRunning && timerData.startTime && timerData.originalDuration) {
+            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000);
+            const remaining = Math.max(0, timerData.originalDuration - elapsed);
+            
+            if (remaining > 0) {
+              console.log("✅ [TIMER_EARLY_RESTORE] Restoring timer state immediately:", {
+                remaining,
+                description: timerData.description,
+                originalDuration: timerData.originalDuration
+              });
+              
+              // Restore timer state immediately to prevent loss
+              setTimerDuration(remaining);
+              setTimerDescription(timerData.description || "");
+              setIsTimerRunning(true);
+              setOriginalTimerDuration(timerData.originalDuration);
+              
+              // Open timer tab immediately
+              setVisibleTabs(prev => new Set([...prev, 'timer']));
+            } else {
+              console.log("🛑 [TIMER_EARLY_RESTORE] Timer finished, cleaning up");
+              localStorage.removeItem(`timer_${roomCode}`);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("❌ [TIMER_EARLY_RESTORE] Failed to restore timer state:", e);
+      }
+    }
+  }, [roomCode]); // Only depends on roomCode to run as early as possible
 
   // Effect to check and sync timer state on component mount
   useEffect(() => {
