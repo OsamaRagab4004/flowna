@@ -30,375 +30,213 @@ const StompContext = createContext<StompContextType>({
 export function StompProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
   const stompClientRef = useRef<Client | null>(null)
-  const subscriptionsRef = useRef<SubscriptionInfo[]>([]) // Stores desired subscriptions { topic, callback }
+  const subscriptionsRef = useRef<SubscriptionInfo[]>([]) // Stores desired subscriptions to re-apply on reconnect
   const [isConnected, setIsConnected] = useState(false)
   const activeSubscriptionsRef = useRef<{ [topic: string]: StompSubscription }>({}) // Stores active STOMP subscription objects
-  
-  // Connection monitoring refs
-  const connectionMonitorRef = useRef<NodeJS.Timeout | null>(null)
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-  const isMonitoringRef = useRef(false)
 
-  // Connection health monitoring function
-  const startConnectionMonitoring = useCallback(() => {
-    if (connectionMonitorRef.current || !user) return
-    
-    console.log("STOMP: Starting connection monitoring")
-    isMonitoringRef.current = true
-    
-    const checkConnection = () => {
-      if (!stompClientRef.current || !user || !isMonitoringRef.current) return
-      
-      const client = stompClientRef.current
-      
-      // Check if client thinks it's connected but WebSocket might be closed
-      if (client.connected && client.webSocket) {
-        if (client.webSocket.readyState !== WebSocket.OPEN) {
-          console.warn("STOMP: WebSocket detected as stale, forcing reconnect")
-          setIsConnected(false)
-          
-          // Force reconnection
-          client.deactivate().then(() => {
-            if (reconnectTimeoutRef.current) {
-              clearTimeout(reconnectTimeoutRef.current)
-            }
-            reconnectTimeoutRef.current = setTimeout(() => {
-              if (stompClientRef.current && user && isMonitoringRef.current) {
-                console.log("STOMP: Reactivating client")
-                stompClientRef.current.activate()
-              }
-            }, 1000)
-          }).catch(e => {
-            console.error("STOMP: Error during forced deactivation", e)
-          })
-        } else {
-          // Send a ping to test if connection is truly alive
-          try {
-            client.publish({
-              destination: '/app/ping',
-              body: JSON.stringify({ timestamp: Date.now(), type: 'heartbeat' })
-            })
-          } catch (error) {
-            console.warn("STOMP: Failed to send ping, connection may be stale", error)
-          }
-        }
-      } else if (!client.connected && isMonitoringRef.current) {
-        console.log("STOMP: Client not connected, attempting reconnect")
-        setIsConnected(false)
-        try {
-          client.activate()
-        } catch (error) {
-          console.error("STOMP: Error activating client", error)
-        }
-      }
+  /**
+   * Creates a new STOMP client instance, configures it, and activates it.
+   * This is the core function for establishing a connection.
+   */
+  const connect = useCallback(() => {
+    // Prevent connection if no user is authenticated or if a client is already active.
+    if (!user || (stompClientRef.current && stompClientRef.current.active)) {
+      return
     }
-    
-    // Check connection every 10 seconds
-    connectionMonitorRef.current = setInterval(checkConnection, 10000)
-    
-    // Initial check after 5 seconds
-    setTimeout(checkConnection, 5000)
-  }, [user])
 
-  const stopConnectionMonitoring = useCallback(() => {
-    console.log("STOMP: Stopping connection monitoring")
-    isMonitoringRef.current = false
-    
-    if (connectionMonitorRef.current) {
-      clearInterval(connectionMonitorRef.current)
-      connectionMonitorRef.current = null
-    }
-    
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current)
-      reconnectTimeoutRef.current = null
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!user) {
-      // User logged out or not available, cleanup STOMP client
-      stopConnectionMonitoring() // Stop monitoring when user logs out
-      
-      if (stompClientRef.current) {
-        console.log("STOMP: User logged out or unavailable. Deactivating client.");
+    // Deactivate any existing client before creating a new one to ensure a clean state.
+    if (stompClientRef.current) {
         stompClientRef.current.deactivate()
-          .then(() => console.log("STOMP: Client deactivated successfully due to user logout."))
-          .catch(e => console.warn("STOMP: Error during client deactivation on user logout", e));
-        stompClientRef.current = null;
-      }
-      setIsConnected(false);
-      activeSubscriptionsRef.current = {}; // Clear active subscriptions
-      subscriptionsRef.current = []; // Clear desired subscriptions
-      return;
     }
 
     const client = new Client({
-      webSocketFactory: () => {
-        const sockjs = new SockJS(getWebSocketUrl(), null, {
-          // Better SockJS configuration for stability
-          transports: ['websocket', 'xhr-streaming', 'xhr-polling'],
-          timeout: 30000,
-        })
-        
-        // Add event listeners for connection monitoring
-        sockjs.onopen = () => console.log("SockJS: Connection opened")
-        sockjs.onclose = (event) => console.log("SockJS: Connection closed", event.code, event.reason)
-        sockjs.onerror = (error) => console.error("SockJS: Error", error)
-        
-        return sockjs
-      },
+      webSocketFactory: () => new SockJS(getWebSocketUrl()),
       connectHeaders: {
         Authorization: `Bearer ${user.access_token}`,
       },
-      debug: function (str) {
-        // console.log("STOMP DEBUG:", str); // Uncomment for verbose debugging
+      // ===================================================================
+      // KEY CHANGE: Heartbeats are disabled (set to 0).
+      // This prevents the client from disconnecting when it doesn't receive
+      // keep-alive responses from the server.
+      // ===================================================================
+      heartbeatIncoming: 0,
+      heartbeatOutgoing: 0,
+
+      // ===================================================================
+      // KEY CHANGE: Rely on the library's built-in automatic reconnection.
+      // The client will attempt to reconnect every 5 seconds if the connection is lost.
+      // ===================================================================
+      reconnectDelay: 5000,
+
+      debug: (str) => {
+        // Uncomment for verbose STOMP logs in the console
+        // console.log("STOMP DEBUG:", str)
       },
-      heartbeatIncoming: 4000, // Shorter heartbeat intervals - every 4 seconds
-      heartbeatOutgoing: 4000,
-      reconnectDelay: 1000, // Faster reconnection - 1 second
-      onStompError: (frame) => {
-        console.error("STOMP Error:", frame.headers['message'], frame.body);
-        setIsConnected(false);
-      },
-      onWebSocketError: (event) => {
-        console.error("WebSocket Error:", event);
-        setIsConnected(false);
-      },
-      onWebSocketClose: (event) => {
-        console.warn("WebSocket Closed:", event.code, event.reason);
-        setIsConnected(false);
-      },
+
       onConnect: () => {
-        console.log("STOMP: Connected");
-        setIsConnected(true);
-        startConnectionMonitoring(); // Start monitoring when connected
-        
-        // Re-subscribe to all desired topics
+        console.log("✅ STOMP: Connected successfully.")
+        setIsConnected(true)
+
+        // When connection is established, re-subscribe to all topics that the app needs.
         subscriptionsRef.current.forEach(({ topic, callback }) => {
-          if (!activeSubscriptionsRef.current[topic] && client.connected) {
-            console.log(`STOMP: Re-subscribing to ${topic} on connect`);
+          if (!activeSubscriptionsRef.current[topic]) {
+            console.log(`🔄 STOMP: Re-subscribing to ${topic} on connect.`)
             try {
-              activeSubscriptionsRef.current[topic] = client.subscribe(topic, callback);
+              activeSubscriptionsRef.current[topic] = client.subscribe(topic, callback)
             } catch (e) {
-              console.error(`STOMP: Error re-subscribing to ${topic}`, e);
+              console.error(`❌ STOMP: Error re-subscribing to ${topic}`, e)
             }
           }
-        });
+        })
       },
+
       onDisconnect: () => {
-        console.log("STOMP: Disconnected");
-        setIsConnected(false);
-        stopConnectionMonitoring(); // Stop monitoring when disconnected
-        // Active subscriptions are not cleared here as the client attempts to reconnect.
-        // If deactivate is called, then they are cleared.
+        console.log("❌ STOMP: Disconnected.")
+        setIsConnected(false)
       },
-    });
 
-    stompClientRef.current = client;
-    console.log("STOMP: Activating client");
-    client.activate();
+      onStompError: (frame) => {
+        console.error("❌ STOMP Error:", frame.headers['message'], frame.body)
+        setIsConnected(false)
+      },
 
+      onWebSocketClose: () => {
+        console.warn("⚠️ WebSocket Closed. STOMP will attempt to reconnect automatically.")
+        setIsConnected(false)
+      },
+    })
+
+    stompClientRef.current = client
+    console.log("🔄 STOMP: Activating new client...")
+    client.activate()
+
+  }, [user])
+
+  /**
+   * Gracefully deactivates and cleans up the STOMP client.
+   */
+  const disconnect = useCallback(() => {
+    if (stompClientRef.current) {
+      console.log("🚪 STOMP: Deactivating client...")
+      stompClientRef.current.deactivate()
+      stompClientRef.current = null
+      setIsConnected(false)
+      activeSubscriptionsRef.current = {}
+    }
+  }, [])
+
+  /**
+   * Manages the connection lifecycle based on user authentication status.
+   */
+  useEffect(() => {
+    if (user) {
+      connect()
+    } else {
+      disconnect()
+    }
+    
+    // Cleanup on component unmount
     return () => {
-      console.log("STOMP: Cleaning up StompProvider. Deactivating client.");
-      stopConnectionMonitoring(); // Stop monitoring on cleanup
-      
-      if (client) {
-        Object.values(activeSubscriptionsRef.current).forEach(sub => {
-          try {
-            sub.unsubscribe();
-          } catch (e) {
-            console.warn("STOMP: Error unsubscribing during provider cleanup", e);
-          }
-        });
-        activeSubscriptionsRef.current = {};
-        
-        client.deactivate()
-          .then(() => console.log("STOMP: Client deactivated successfully during provider cleanup."))
-          .catch(e => console.warn("STOMP: Error during client deactivation in provider cleanup", e));
-      }
-      stompClientRef.current = null;
-      setIsConnected(false);
-      // subscriptionsRef.current is not cleared here, as it might be needed if the provider remounts with the same user.
-      // It's cleared if the user changes/logs out.
-    };
-  }, [user, startConnectionMonitoring, stopConnectionMonitoring]); // Re-initialize client only if user changes
+      disconnect()
+    }
+  }, [user, connect, disconnect])
 
-  // Browser Event Handling - Page visibility changes: Maintains connection when tab becomes hidden/visible
+  /**
+   * A function that can be called from the UI or event listeners
+   * to manually trigger a reconnection attempt.
+   */
+  const forceReconnect = useCallback(() => {
+      console.log("🔄 STOMP: Manual reconnect triggered.")
+      if (stompClientRef.current && !stompClientRef.current.connected) {
+          console.log("STOMP: Client not connected, calling activate() to reconnect.")
+          stompClientRef.current.activate()
+      } else if (!stompClientRef.current) {
+          console.log("STOMP: No client instance found, calling connect() to initialize.")
+          connect()
+      }
+  }, [connect])
+
+  /**
+   * Adds event listeners to the browser window to detect changes
+   * (like regaining focus or network) and trigger a reconnect if needed.
+   */
   useEffect(() => {
     const handleVisibilityChange = () => {
-      if (!document.hidden && stompClientRef.current && user) {
-        // Page became visible, check connection health
-        console.log("STOMP: Page became visible, checking connection")
-        setTimeout(() => {
-          if (stompClientRef.current && !stompClientRef.current.connected) {
-            console.log("STOMP: Reconnecting after page became visible")
-            stompClientRef.current.activate()
-          }
-        }, 1000)
+      if (!document.hidden) {
+        console.log("👁️ STOMP: Page became visible, checking connection...")
+        forceReconnect()
       }
-      // Note: We don't disconnect when page becomes hidden to maintain background connection
     }
 
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
-  }, [user])
-
-  // Network change detection: Handles online/offline events for reconnection
-  useEffect(() => {
     const handleOnline = () => {
-      console.log("STOMP: Network came online")
-      if (stompClientRef.current && user) {
-        setTimeout(() => {
-          if (!stompClientRef.current?.connected) {
-            console.log("STOMP: Reconnecting after network came online")
-            stompClientRef.current?.activate()
-          }
-        }, 2000) // Wait a bit for network to stabilize
-      }
+      console.log("🌐 STOMP: Network came online, checking connection...")
+      forceReconnect()
     }
 
-    const handleOffline = () => {
-      console.log("STOMP: Network went offline")
-      setIsConnected(false)
-    }
-
+    window.addEventListener('visibilitychange', handleVisibilityChange)
     window.addEventListener('online', handleOnline)
-    window.addEventListener('offline', handleOffline)
-    
+    window.addEventListener('focus', forceReconnect) // Also check on focus
+
     return () => {
+      window.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('online', handleOnline)
-      window.removeEventListener('offline', handleOffline)
+      window.removeEventListener('focus', forceReconnect)
     }
-  }, [user])
+  }, [forceReconnect])
 
-  // Focus/blur events: Checks connection when window gains focus
-  useEffect(() => {
-    const handleFocus = () => {
-      console.log("STOMP: Window gained focus")
-      if (stompClientRef.current && user && !stompClientRef.current.connected) {
-        console.log("STOMP: Reconnecting on window focus")
-        setTimeout(() => {
-          if (stompClientRef.current && !stompClientRef.current.connected) {
-            stompClientRef.current.activate()
-          }
-        }, 500)
-      }
-    }
-
-    const handleBlur = () => {
-      console.log("STOMP: Window lost focus - maintaining background connection")
-      // No disconnection on tab hide: Keeps connection alive in background
-    }
-
-    window.addEventListener('focus', handleFocus)
-    window.addEventListener('blur', handleBlur)
-    
-    return () => {
-      window.removeEventListener('focus', handleFocus)
-      window.removeEventListener('blur', handleBlur)
-    }
-  }, [user])
-
+  /**
+   * Subscribes to a STOMP topic. It maintains a list of desired subscriptions
+   * so they can be automatically re-established after a disconnection.
+   */
   const subscribeToTopic = useCallback(
     (topic: string, callback: (message: IMessage) => void): StompSubscription | null => {
-      // Robust Subscription Management - Persistent subscriptions: Maintains desired subscriptions and re-subscribes on reconnect
+      // Add to the list of desired subscriptions for automatic reconnection.
       if (!subscriptionsRef.current.some(sub => sub.topic === topic)) {
-        subscriptionsRef.current.push({ topic, callback });
-        console.log(`STOMP: Added ${topic} to desired subscriptions.`);
-      } else {
-        // If already in desired, update callback just in case it changed (e.g. due to dependencies)
-        const subInfo = subscriptionsRef.current.find(sub => sub.topic === topic);
-        if (subInfo && subInfo.callback !== callback) {
-            console.log(`STOMP: Updating callback for desired subscription ${topic}.`);
-            subInfo.callback = callback;
-            // If already actively subscribed, re-subscribe with new callback
-            if (stompClientRef.current && stompClientRef.current.connected && activeSubscriptionsRef.current[topic]) {
-                console.log(`STOMP: Re-subscribing to ${topic} with updated callback.`);
-                try {
-                    activeSubscriptionsRef.current[topic].unsubscribe();
-                    delete activeSubscriptionsRef.current[topic]; // Ensure it's removed before re-adding
-                    activeSubscriptionsRef.current[topic] = stompClientRef.current.subscribe(topic, callback);
-                } catch (e) {
-                    console.error(`STOMP: Error re-subscribing to ${topic} with new callback`, e);
-                }
-            }
-        }
+        subscriptionsRef.current.push({ topic, callback })
       }
 
-      if (stompClientRef.current && stompClientRef.current.connected) {
+      const client = stompClientRef.current
+      if (client && client.connected) {
         if (!activeSubscriptionsRef.current[topic]) {
-          console.log(`STOMP: Subscribing to ${topic} immediately.`);
+          console.log(`STOMP: Subscribing to ${topic}`)
           try {
-            const sub = stompClientRef.current.subscribe(topic, callback);
-            activeSubscriptionsRef.current[topic] = sub;
-            return sub;
+            const sub = client.subscribe(topic, callback)
+            activeSubscriptionsRef.current[topic] = sub
+            return sub
           } catch (e) {
-            console.error(`STOMP: Error subscribing to ${topic}`, e);
-            // Error recovery: Handles subscription failures gracefully
-            setIsConnected(false);
-            return null;
+            console.error(`❌ STOMP: Error subscribing to ${topic}`, e)
+            return null
           }
-        } else {
-          console.log(`STOMP: Already actively subscribed to ${topic}. Returning existing subscription.`);
-          return activeSubscriptionsRef.current[topic];
         }
+        return activeSubscriptionsRef.current[topic]
       }
-      console.log(`STOMP: Not connected or client not ready, ${topic} will be subscribed on connect.`);
-      return null;
+      
+      console.log(`⏳ STOMP: Client not connected. Subscription to ${topic} will occur upon connection.`)
+      return null
     },
-    [] // Callbacks use refs, so no direct state/prop dependencies needed here for useCallback itself.
-  );
+    []
+  )
 
+  /**
+   * Unsubscribes from a STOMP topic and removes it from the list of desired subscriptions.
+   */
   const unsubscribeFromTopic = useCallback(
     (topic: string) => {
-      console.log(`STOMP: Attempting to unsubscribe from ${topic}`);
-      subscriptionsRef.current = subscriptionsRef.current.filter(sub => sub.topic !== topic);
-      console.log(`STOMP: Removed ${topic} from desired subscriptions.`);
+      // Remove from desired subscriptions list.
+      subscriptionsRef.current = subscriptionsRef.current.filter(sub => sub.topic !== topic)
 
       if (activeSubscriptionsRef.current[topic]) {
         try {
-          activeSubscriptionsRef.current[topic].unsubscribe();
-          console.log(`STOMP: Unsubscribed from ${topic} on client.`);
+          activeSubscriptionsRef.current[topic].unsubscribe()
+          console.log(`STOMP: Unsubscribed from ${topic}.`)
         } catch (e) {
-          console.warn(`STOMP: Error unsubscribing from ${topic} on client`, e);
+          console.warn(`⚠️ STOMP: Error unsubscribing from ${topic}`, e)
         }
-        delete activeSubscriptionsRef.current[topic];
-      } else {
-        console.log(`STOMP: No active subscription found for ${topic} to unsubscribe from client.`);
+        delete activeSubscriptionsRef.current[topic]
       }
     },
-    [] // Uses refs
-  );
-
-  // Manual reconnection: Users can force reconnect if automatic attempts fail
-  const forceReconnect = useCallback(() => {
-    console.log("STOMP: Force reconnect requested");
-    if (stompClientRef.current && user) {
-      setIsConnected(false);
-      stopConnectionMonitoring();
-      
-      const client = stompClientRef.current;
-      client.deactivate().then(() => {
-        console.log("STOMP: Client deactivated for force reconnect");
-        setTimeout(() => {
-          if (stompClientRef.current && user) {
-            console.log("STOMP: Reactivating client after force reconnect");
-            stompClientRef.current.activate();
-          }
-        }, 1000);
-      }).catch(e => {
-        console.error("STOMP: Error during force reconnect deactivation", e);
-        // Try to activate anyway
-        setTimeout(() => {
-          if (stompClientRef.current && user) {
-            console.log("STOMP: Attempting activation after failed deactivation");
-            stompClientRef.current.activate();
-          }
-        }, 1000);
-      });
-    }
-  }, [user, stopConnectionMonitoring]);
+    []
+  )
 
   return (
     <StompContext.Provider value={{
@@ -410,9 +248,9 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
     }}>
       {children}
     </StompContext.Provider>
-  );
+  )
 }
 
 export function useStomp() {
-  return useContext(StompContext);
+  return useContext(StompContext)
 }
