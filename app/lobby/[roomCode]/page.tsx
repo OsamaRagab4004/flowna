@@ -912,11 +912,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         connectionLostRef.current = false
         reconnectAttemptRef.current = 0
         
-        // Refetch room data after reconnection
-        setTimeout(() => {
-          fetchRoomMembers()
-          fetchRoomMessages()
-        }, 1000)
+        // Refetch room data after reconnection immediately
+        fetchRoomMembers()
+        fetchRoomMessages()
         
         toast({
           title: "Connection Restored",
@@ -936,17 +934,16 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         })
       }
       
-      // Automatic reconnection: Attempts to reconnect when issues are detected
+      // Automatic reconnection: Attempts to reconnect when issues are detected - MUCH FASTER
       const attemptReconnect = () => {
         if (reconnectAttemptRef.current < maxReconnectAttempts) {
           reconnectAttemptRef.current++
-          console.log(`🔄 [CONNECTION] Reconnection attempt ${reconnectAttemptRef.current}/${maxReconnectAttempts}`)
+          console.log(`🔄 [CONNECTION] IMMEDIATE reconnection attempt ${reconnectAttemptRef.current}/${maxReconnectAttempts}`)
           
-          setTimeout(() => {
-            if (!isConnected && user && roomCode) {
-              forceReconnect()
-            }
-          }, 2000 * reconnectAttemptRef.current) // Exponential backoff
+          // Immediate reconnection - no delay
+          if (!isConnected && user && roomCode) {
+            forceReconnect()
+          }
         } else {
           console.log("❌ [CONNECTION] Max reconnection attempts reached")
           toast({
@@ -957,9 +954,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         }
       }
       
-      // Start reconnection attempts after a delay
+      // Start reconnection attempts immediately - no delay
       if (connectionLostRef.current && reconnectAttemptRef.current === 0) {
-        setTimeout(attemptReconnect, 3000)
+        attemptReconnect()
       }
     }
   }, [isConnected, user, roomCode, forceReconnect, fetchRoomMembers, fetchRoomMessages, toast])

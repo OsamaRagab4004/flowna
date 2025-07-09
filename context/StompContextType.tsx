@@ -39,11 +39,11 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isMonitoringRef = useRef(false)
 
-  // Very simple connection health monitoring function - NO PINGS
+  // Immediate connection health monitoring function - NO PINGS, INSTANT RECONNECT
   const startConnectionMonitoring = useCallback(() => {
     if (connectionMonitorRef.current || !user) return
     
-    console.log("STOMP: Starting simple WebSocket state monitoring (no pings)")
+    console.log("STOMP: Starting immediate WebSocket state monitoring (no pings)")
     isMonitoringRef.current = true
     
     const checkConnection = () => {
@@ -53,22 +53,29 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       
       // Only check WebSocket readyState - no pings or heartbeats
       if (client.connected && client.webSocket && client.webSocket.readyState !== WebSocket.OPEN) {
-        console.warn("STOMP: WebSocket readyState indicates stale connection, reconnecting")
+        console.warn("STOMP: WebSocket readyState indicates stale connection, reconnecting IMMEDIATELY")
         setIsConnected(false)
         
-        // Simple reconnection
+        // IMMEDIATE reconnection - no delays
         client.deactivate().then(() => {
-          setTimeout(() => {
-            if (stompClientRef.current && user && isMonitoringRef.current) {
-              console.log("STOMP: Reactivating client after WebSocket state check")
-              stompClientRef.current.activate()
-            }
-          }, 2000)
+          if (stompClientRef.current && user && isMonitoringRef.current) {
+            console.log("STOMP: Reactivating client IMMEDIATELY after WebSocket state check")
+            stompClientRef.current.activate()
+          }
         }).catch(e => {
           console.error("STOMP: Error during deactivation", e)
+          // Even if deactivation fails, try to activate new client
+          if (stompClientRef.current && user && isMonitoringRef.current) {
+            console.log("STOMP: Attempting immediate activation despite deactivation error")
+            try {
+              stompClientRef.current.activate()
+            } catch (activationError) {
+              console.error("STOMP: Failed to activate after deactivation error", activationError)
+            }
+          }
         })
       } else if (!client.connected && isMonitoringRef.current) {
-        console.log("STOMP: Client not connected, attempting reconnect")
+        console.log("STOMP: Client not connected, attempting IMMEDIATE reconnect")
         setIsConnected(false)
         try {
           client.activate()
@@ -78,11 +85,11 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       }
     }
     
-    // Check less frequently - every 10 seconds
-    connectionMonitorRef.current = setInterval(checkConnection, 10000)
+    // Check more frequently - every 3 seconds for faster detection
+    connectionMonitorRef.current = setInterval(checkConnection, 3000)
     
-    // Initial check after 5 seconds
-    setTimeout(checkConnection, 5000)
+    // Initial check immediately - no delay
+    checkConnection()
   }, [user])
 
   const stopConnectionMonitoring = useCallback(() => {
@@ -141,18 +148,45 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       },
       heartbeatIncoming: 0, // Disable heartbeats completely
       heartbeatOutgoing: 0, // Disable heartbeats completely
-      reconnectDelay: 500, 
+      reconnectDelay: 100, // Very fast reconnection - 100ms instead of 500ms 
       onStompError: (frame) => {
         console.error("STOMP Error:", frame.headers['message'], frame.body);
         setIsConnected(false);
+        // Immediately try to reconnect on STOMP error
+        if (user && isMonitoringRef.current) {
+          console.log("STOMP: Attempting immediate reconnect after STOMP error");
+          setTimeout(() => {
+            if (stompClientRef.current && !stompClientRef.current.connected) {
+              stompClientRef.current.activate();
+            }
+          }, 100);
+        }
       },
       onWebSocketError: (event) => {
         console.error("WebSocket Error:", event);
         setIsConnected(false);
+        // Immediately try to reconnect on WebSocket error
+        if (user && isMonitoringRef.current) {
+          console.log("STOMP: Attempting immediate reconnect after WebSocket error");
+          setTimeout(() => {
+            if (stompClientRef.current && !stompClientRef.current.connected) {
+              stompClientRef.current.activate();
+            }
+          }, 100);
+        }
       },
       onWebSocketClose: (event) => {
         console.warn("WebSocket Closed:", event.code, event.reason);
         setIsConnected(false);
+        // Immediately try to reconnect on WebSocket close
+        if (user && isMonitoringRef.current) {
+          console.log("STOMP: Attempting immediate reconnect after WebSocket close");
+          setTimeout(() => {
+            if (stompClientRef.current && !stompClientRef.current.connected) {
+              stompClientRef.current.activate();
+            }
+          }, 100);
+        }
       },
       onConnect: () => {
         console.log("STOMP: Connected");
@@ -213,19 +247,18 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (!document.hidden && stompClientRef.current && user) {
-        // Page became visible, check connection health after a short delay
-        console.log("STOMP: Page became visible, checking connection")
-        setTimeout(() => {
-          if (stompClientRef.current && (!stompClientRef.current.connected || 
-              (stompClientRef.current.webSocket && stompClientRef.current.webSocket.readyState !== WebSocket.OPEN))) {
-            console.log("STOMP: Connection issue detected after page became visible, attempting simple reconnect")
-            try {
-              stompClientRef.current.activate()
-            } catch (error) {
-              console.warn("STOMP: Visibility reconnect failed", error)
-            }
+        // Page became visible, check connection health immediately
+        console.log("STOMP: Page became visible, checking connection IMMEDIATELY")
+        // No delay - check immediately
+        if (stompClientRef.current && (!stompClientRef.current.connected || 
+            (stompClientRef.current.webSocket && stompClientRef.current.webSocket.readyState !== WebSocket.OPEN))) {
+          console.log("STOMP: Connection issue detected after page became visible, attempting IMMEDIATE reconnect")
+          try {
+            stompClientRef.current.activate()
+          } catch (error) {
+            console.warn("STOMP: Visibility reconnect failed", error)
           }
-        }, 2000) // Wait 2 seconds for things to stabilize
+        }
       }
     }
 
@@ -236,14 +269,13 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
   // Network change detection: Handles online/offline events for reconnection
   useEffect(() => {
     const handleOnline = () => {
-      console.log("STOMP: Network came online")
+      console.log("STOMP: Network came online - attempting IMMEDIATE reconnect")
       if (stompClientRef.current && user) {
-        setTimeout(() => {
-          if (!stompClientRef.current?.connected) {
-            console.log("STOMP: Reconnecting after network came online")
-            stompClientRef.current?.activate()
-          }
-        }, 3000) // Wait longer for network to stabilize
+        // No delay - reconnect immediately when network comes back
+        if (!stompClientRef.current?.connected) {
+          console.log("STOMP: Reconnecting IMMEDIATELY after network came online")
+          stompClientRef.current?.activate()
+        }
       }
     }
 
@@ -264,14 +296,13 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
   // Focus/blur events: Simple connection check when window gains focus
   useEffect(() => {
     const handleFocus = () => {
-      console.log("STOMP: Window gained focus")
+      console.log("STOMP: Window gained focus - checking connection IMMEDIATELY")
       if (stompClientRef.current && user && !stompClientRef.current.connected) {
-        console.log("STOMP: Reconnecting on window focus")
-        setTimeout(() => {
-          if (stompClientRef.current && !stompClientRef.current.connected) {
-            stompClientRef.current.activate()
-          }
-        }, 500)
+        console.log("STOMP: Reconnecting IMMEDIATELY on window focus")
+        // No delay - reconnect immediately
+        if (stompClientRef.current && !stompClientRef.current.connected) {
+          stompClientRef.current.activate()
+        }
       }
     }
 
@@ -388,7 +419,7 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       }
     }
     
-    // Create completely new client instance after a short delay
+    // Create completely new client instance with minimal delay
     setTimeout(() => {
       if (!user || !isMonitoringRef.current) return;
       
@@ -415,18 +446,45 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
         },
         heartbeatIncoming: 0, // Disable heartbeats completely
         heartbeatOutgoing: 0, // Disable heartbeats completely
-        reconnectDelay: 500, 
+        reconnectDelay: 100, // Very fast reconnection for force reconnect too 
         onStompError: (frame) => {
           console.error("STOMP Error:", frame.headers['message'], frame.body);
           setIsConnected(false);
+          // Immediately try to reconnect on STOMP error
+          if (user && isMonitoringRef.current) {
+            console.log("STOMP: New client attempting immediate reconnect after STOMP error");
+            setTimeout(() => {
+              if (stompClientRef.current && !stompClientRef.current.connected) {
+                stompClientRef.current.activate();
+              }
+            }, 100);
+          }
         },
         onWebSocketError: (event) => {
           console.error("WebSocket Error:", event);
           setIsConnected(false);
+          // Immediately try to reconnect on WebSocket error
+          if (user && isMonitoringRef.current) {
+            console.log("STOMP: New client attempting immediate reconnect after WebSocket error");
+            setTimeout(() => {
+              if (stompClientRef.current && !stompClientRef.current.connected) {
+                stompClientRef.current.activate();
+              }
+            }, 100);
+          }
         },
         onWebSocketClose: (event) => {
           console.warn("WebSocket Closed:", event.code, event.reason);
           setIsConnected(false);
+          // Immediately try to reconnect on WebSocket close
+          if (user && isMonitoringRef.current) {
+            console.log("STOMP: New client attempting immediate reconnect after WebSocket close");
+            setTimeout(() => {
+              if (stompClientRef.current && !stompClientRef.current.connected) {
+                stompClientRef.current.activate();
+              }
+            }, 100);
+          }
         },
         onConnect: () => {
           console.log("STOMP: New client connected successfully");
@@ -455,7 +513,7 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       stompClientRef.current = newClient;
       newClient.activate();
       
-    }, 1500); // Wait 1.5 seconds before creating new client
+    }, 200); // Reduced from 1.5 seconds to 200ms for much faster reconnection
   }, [user, stopConnectionMonitoring, startConnectionMonitoring]);
 
   return (
