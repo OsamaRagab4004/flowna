@@ -39,11 +39,11 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isMonitoringRef = useRef(false)
 
-  // Simple connection health monitoring function
+  // Very simple connection health monitoring function - NO PINGS
   const startConnectionMonitoring = useCallback(() => {
     if (connectionMonitorRef.current || !user) return
     
-    console.log("STOMP: Starting simple connection monitoring")
+    console.log("STOMP: Starting simple WebSocket state monitoring (no pings)")
     isMonitoringRef.current = true
     
     const checkConnection = () => {
@@ -51,27 +51,24 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       
       const client = stompClientRef.current
       
-      // Simple check: if client thinks it's connected but WebSocket is not open, force reconnect
+      // Only check WebSocket readyState - no pings or heartbeats
       if (client.connected && client.webSocket && client.webSocket.readyState !== WebSocket.OPEN) {
-        console.warn("STOMP: WebSocket detected as stale, forcing simple reconnect")
+        console.warn("STOMP: WebSocket readyState indicates stale connection, reconnecting")
         setIsConnected(false)
         
-        // Force a clean reconnection by deactivating and reactivating
+        // Simple reconnection
         client.deactivate().then(() => {
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current)
-          }
-          reconnectTimeoutRef.current = setTimeout(() => {
+          setTimeout(() => {
             if (stompClientRef.current && user && isMonitoringRef.current) {
-              console.log("STOMP: Reactivating client after stale detection")
+              console.log("STOMP: Reactivating client after WebSocket state check")
               stompClientRef.current.activate()
             }
           }, 2000)
         }).catch(e => {
-          console.error("STOMP: Error during forced deactivation", e)
+          console.error("STOMP: Error during deactivation", e)
         })
       } else if (!client.connected && isMonitoringRef.current) {
-        console.log("STOMP: Client not connected, attempting simple reconnect")
+        console.log("STOMP: Client not connected, attempting reconnect")
         setIsConnected(false)
         try {
           client.activate()
@@ -79,14 +76,13 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
           console.error("STOMP: Error activating client", error)
         }
       }
-      // Remove ping-based testing entirely - rely only on WebSocket state
     }
     
-    // Check connection every 5 seconds
-    connectionMonitorRef.current = setInterval(checkConnection, 5000)
+    // Check less frequently - every 10 seconds
+    connectionMonitorRef.current = setInterval(checkConnection, 10000)
     
-    // Initial check after 3 seconds
-    setTimeout(checkConnection, 3000)
+    // Initial check after 5 seconds
+    setTimeout(checkConnection, 5000)
   }, [user])
 
   const stopConnectionMonitoring = useCallback(() => {
@@ -143,9 +139,9 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
       debug: function (str) {
         // console.log("STOMP DEBUG:", str); // Uncomment for verbose debugging
       },
-      heartbeatIncoming: 4000, // Shorter heartbeat intervals - every 4 seconds
-      heartbeatOutgoing: 4000,
-      reconnectDelay: 1000, // Faster reconnection - 1 second
+      heartbeatIncoming: 0, // Disable heartbeats completely
+      heartbeatOutgoing: 0, // Disable heartbeats completely
+      reconnectDelay: 2000, // Slightly longer reconnection delay
       onStompError: (frame) => {
         console.error("STOMP Error:", frame.headers['message'], frame.body);
         setIsConnected(false);
@@ -417,8 +413,8 @@ export function StompProvider({ children }: { children: React.ReactNode }) {
         debug: function (str) {
           // console.log("STOMP DEBUG:", str);
         },
-        heartbeatIncoming: 4000,
-        heartbeatOutgoing: 4000,
+        heartbeatIncoming: 0, // Disable heartbeats completely
+        heartbeatOutgoing: 0, // Disable heartbeats completely
         reconnectDelay: 2000, // Slightly longer delay for stability
         onStompError: (frame) => {
           console.error("STOMP Error:", frame.headers['message'], frame.body);

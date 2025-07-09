@@ -41,14 +41,14 @@ const Home = memo(function Home() {
                 <Image 
                   src="/flowna.svg" 
                   alt="Flowna Logo" 
-                  width={120} 
-                  height={120} 
+                  width={220} 
+                  height={220} 
                   className="text-blue-500"
                   priority
                 />
               </div>
               <CardTitle className="text-3xl font-bold">flowna</CardTitle>
-              <CardDescription className="text-base">Welcome back, {userName}!</CardDescription>
+              <CardDescription className="text-base">Welcome, {userName}!</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <Link href="/create" className="w-full block">
