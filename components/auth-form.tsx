@@ -194,6 +194,24 @@ export function AuthForm() {
           <CardContent className="space-y-6">
             {!showReset ? (
               <>
+                {/* Video Section */}
+                <div className="mb-6">
+                  <div className="relative rounded-lg overflow-hidden bg-black/20 backdrop-blur-sm">
+                    <video 
+                      controls 
+                      className="w-full h-48 object-contain"
+                      poster="/placeholder.jpg"
+                    >
+                      <source src="/flowna-demo.mp4" type="video/mp4" />
+                      <source src="/flowna-demo.webm" type="video/webm" />
+                      Your browser does not support the video tag.
+                    </video>
+                  </div>
+                  <p className="text-white/80 text-sm text-center mt-2">
+                    Watch how flowna transforms your learning experience
+                  </p>
+                </div>
+
                 {/* Google Login Button */}
                 <GoogleLogin              
                   onSuccess={async (credentialResponse) => {
