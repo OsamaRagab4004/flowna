@@ -28,6 +28,25 @@ import "@/styles/strategic-mind.css"; // Import the new CSS file
 import { LectureList } from "@/components/lecture-list";
 import { SessionList } from "@/components/session-list";
 import { getApiUrl } from '@/lib/api';
+import { usePageTitle } from '@/hooks/use-page-title';
+
+// Utility function to calculate remaining time for timer
+const calculateRemainingTime = (startTime: number, originalDuration: number): number => {
+  const elapsed = Math.floor((Date.now() - startTime) / 1000);
+  return Math.max(0, originalDuration - elapsed);
+};
+
+// Utility function to format time as MM:SS or HH:MM:SS
+const formatTime = (seconds: number): string => {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${secs.toString().padStart(2, '0')}`;
+};
 
 export default function Lobby({ params }: { params: Promise<{ roomCode: string }> }) {
   const router = useRouter()
@@ -44,7 +63,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const { setGameState, addQuestion } = useGameContext()
   const { user, loading } = useAuth()
   const [storedIsHost, setStoredIsHost] = useState(true)
-  const { subscribeToTopic, unsubscribeFromTopic, stompClient } = useStomp()
+  const { subscribeToTopic, unsubscribeFromTopic, stompClient, isConnected, forceReconnect } = useStomp()
   const subscriptionRef = useRef<StompSubscription | null>(null)
   const hasManuallyLeftRef = useRef(false) // Track manual leave action
   const [players, setPlayers] = useState<any[]>([])
@@ -59,6 +78,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   const [showTimer, setShowTimer] = useState(false) // Timer modal state
   const [showStudyGoal, setShowStudyGoal] = useState(false) // Study goal modal state
   const isCleaningUpTimer = useRef(false) // Flag to prevent conflicts during timer cleanup
+  const isTimerInitialized = useRef(false) // Flag to track timer initialization per component instance
   const [timerDuration, setTimerDuration] = useState(() => {
     // Initialize from localStorage if available
     if (typeof window !== "undefined") {
@@ -70,9 +90,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
           // If timer is running, calculate the remaining time
           if (timerData.isRunning && timerData.startTime) {
             const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-            const remaining = Math.max(0, timerData.duration - elapsed)
+            const remaining = Math.max(0, (timerData.originalDuration || timerData.duration) - elapsed)
             console.log("🔄 [TIMER_INIT] Calculated remaining time from localStorage:", {
-              originalDuration: timerData.duration,
+              originalDuration: timerData.originalDuration || timerData.duration,
               elapsed,
               remaining,
               startTime: new Date(timerData.startTime).toISOString()
@@ -110,6 +130,22 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         const saved = localStorage.getItem(`timer_${roomCode}`)
         if (saved) {
           const timerData = JSON.parse(saved)
+          
+          // Only set as running if timer is actually still running (has remaining time)
+          if (timerData.isRunning && timerData.startTime && timerData.originalDuration) {
+            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
+            const remaining = Math.max(0, timerData.originalDuration - elapsed)
+            
+            // Only consider timer as running if there's time remaining
+            if (remaining > 0) {
+              console.log("🔄 [TIMER_INIT_STATE] Timer still running with remaining time:", remaining)
+              return true
+            } else {
+              console.log("🛑 [TIMER_INIT_STATE] Timer finished during initialization, marking as stopped")
+              return false
+            }
+          }
+          
           return timerData.isRunning || false
         }
       } catch (e) {
@@ -118,6 +154,9 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     }
     return false
   })
+
+  // State to force re-renders for timer badge updates
+  const [timerTick, setTimerTick] = useState(0);
     const [lectures, setLectures] = useState<{
     lectureId: number; title: string; creationTime: string 
 }[]>([]);
@@ -327,6 +366,68 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
   const username = user?.name || getLocalName()
 
+  // Calculate current remaining time for timer badge and page title
+  const currentRemainingTime = useMemo(() => {
+    if (!isTimerRunning) return timerDuration;
+    
+    try {
+      const saved = localStorage.getItem(`timer_${roomCode}`);
+      if (saved) {
+        const timerData = JSON.parse(saved);
+        if (timerData.startTime && timerData.originalDuration) {
+          return calculateRemainingTime(timerData.startTime, timerData.originalDuration);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to calculate remaining time:", e);
+    }
+    
+    return timerDuration;
+  }, [isTimerRunning, timerDuration, roomCode, timerTick]);
+
+  // Update page title with timer
+  const pageTitle = useMemo(() => {
+    if (isTimerRunning && currentRemainingTime > 0) {
+      return `${formatTime(currentRemainingTime)} - Study Room`;
+    }
+    return "Study Room";
+  }, [isTimerRunning, currentRemainingTime]);
+
+  usePageTitle(pageTitle);
+
+  // Update timer state and page title every second when timer is running
+  useEffect(() => {
+    if (!isTimerRunning) return;
+
+    const interval = setInterval(() => {
+      try {
+        const saved = localStorage.getItem(`timer_${roomCode}`);
+        if (saved) {
+          const timerData = JSON.parse(saved);
+          if (timerData.startTime && timerData.originalDuration) {
+            const remaining = calculateRemainingTime(timerData.startTime, timerData.originalDuration);
+            // Force re-render by updating timerTick state
+            setTimerTick(prev => prev + 1);
+            
+            // Update timerDuration state if it's significantly different
+            if (Math.abs(remaining - timerDuration) > 1) {
+              setTimerDuration(remaining);
+            }
+            
+            if (remaining === 0) {
+              // Timer finished, stop the interval
+              clearInterval(interval);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to update timer state:", e);
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isTimerRunning, roomCode, timerDuration]);
+
   // Memoize chat-related data to prevent unnecessary re-renders
   const chatData = useMemo(() => ({
     messages,
@@ -494,7 +595,16 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
     console.log("🚪 [LEAVE_ROOM] Leaving room:", { roomCode, user: user.name });
 
-    if (isReload) {
+    // Only clean up timer localStorage when NOT reloading the page
+    // During page reload, we want to preserve timer state for reconnection
+    if (!isReload.current) {
+      console.log("🧹 [LEAVE_ROOM] Cleaning up timer localStorage (not a reload)");
+      clearTimerFromLocalStorage();
+    } else {
+      console.log("🔄 [LEAVE_ROOM] Page reload detected, preserving timer state");
+    }
+
+    if (isReload.current) {
       console.log("🔄 [LEAVE_ROOM] Page reload detected, setting needsRejoin flag");
       setNeedsRejoin(true);
     }
@@ -544,12 +654,15 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         isRunning,
         timestamp: Date.now(),
         startTime: startTime || Date.now(), // When the timer actually started
-        originalDuration: originalDuration || duration // Store original duration for progress calculation
+        originalDuration: originalDuration || duration, // Store original duration for progress calculation
+        roomCode, // Include room code for validation
+        username: user?.name, // Include username for validation
+        sessionId: Date.now() // Unique session identifier to prevent conflicts
       }
       localStorage.setItem(`timer_${roomCode}`, JSON.stringify(timerData))
       console.log("💾 [TIMER_STORAGE] Saved timer to localStorage:", timerData)
     }
-  }, [roomCode])
+  }, [roomCode, user?.name])
 
   // Function to clear timer from localStorage
   const clearTimerFromLocalStorage = useCallback(() => {
@@ -558,6 +671,48 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       console.log("🗑️ [TIMER_STORAGE] Cleared timer from localStorage")
     }
   }, [roomCode])
+
+  // Function to validate timer localStorage data
+  const validateTimerFromLocalStorage = useCallback((skipUserValidation = false) => {
+    if (typeof window !== "undefined" && roomCode) {
+      try {
+        const saved = localStorage.getItem(`timer_${roomCode}`)
+        if (saved) {
+          const timerData = JSON.parse(saved)
+          
+          // Validate that the timer data belongs to current room
+          if (timerData.roomCode !== roomCode) {
+            console.warn("🚨 [TIMER_VALIDATION] Timer data from different room, clearing:", timerData.roomCode, "vs", roomCode)
+            clearTimerFromLocalStorage()
+            return null
+          }
+          
+          // Only validate username if user is available and we're not skipping validation
+          if (!skipUserValidation && user?.name && timerData.username && timerData.username !== user.name) {
+            console.warn("🚨 [TIMER_VALIDATION] Timer data from different user, clearing:", timerData.username, "vs", user.name)
+            clearTimerFromLocalStorage()
+            return null
+          }
+          
+          // Check if timer data is too old (older than 24 hours)
+          const maxAge = 24 * 60 * 60 * 1000 // 24 hours in milliseconds
+          if (timerData.timestamp && (Date.now() - timerData.timestamp) > maxAge) {
+            console.warn("🚨 [TIMER_VALIDATION] Timer data too old, clearing")
+            clearTimerFromLocalStorage()
+            return null
+          }
+          
+          console.log("✅ [TIMER_VALIDATION] Timer data validated successfully:", timerData)
+          return timerData
+        }
+      } catch (e) {
+        console.warn("❌ [TIMER_VALIDATION] Failed to parse timer data from localStorage, clearing:", e)
+        clearTimerFromLocalStorage()
+        return null
+      }
+    }
+    return null
+  }, [roomCode, user?.name, clearTimerFromLocalStorage])
 
   // Function to handle timer started event from server
   const handleTimerStartedFromServer = useCallback((timerData: { 
@@ -569,34 +724,75 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   }) => {
     console.log("🔔 [TIMER_STARTED] Received timer data from server:", timerData)
     
+    // Check if we already have a running timer from localStorage
+    const existingTimerData = validateTimerFromLocalStorage()
+    
+    if (existingTimerData && existingTimerData.isRunning) {
+      console.log("🔄 [TIMER_STARTED] Already have running timer from localStorage, preserving state")
+      
+      // Calculate remaining time from existing timer
+      const elapsed = Math.floor((Date.now() - existingTimerData.startTime) / 1000)
+      const remainingTime = Math.max(0, existingTimerData.originalDuration - elapsed)
+      
+      console.log("🔄 [TIMER_STARTED] Preserving existing timer state:", {
+        existingStartTime: new Date(existingTimerData.startTime).toISOString(),
+        elapsed,
+        originalDuration: existingTimerData.originalDuration,
+        remainingTime
+      })
+      
+      // Only update if timer is still running
+      if (remainingTime > 0) {
+        setTimerDuration(remainingTime)
+        setTimerDescription(existingTimerData.description || "")
+        setIsTimerRunning(true)
+        setOriginalTimerDuration(existingTimerData.originalDuration)
+        
+        // Automatically open timer tab when timer starts for all users
+        setVisibleTabs(prev => new Set([...prev, 'timer']))
+        return
+      } else {
+        // Timer has finished, clean up
+        console.log("🛑 [TIMER_STARTED] Existing timer has finished, cleaning up")
+        clearTimerFromLocalStorage()
+      }
+    }
+    
+    // No existing timer or it has finished, use server data
     const serverStartTime = timerData.startTime || Date.now()
     const elapsed = Math.floor((Date.now() - serverStartTime) / 1000)
     const remainingTime = Math.max(0, timerData.timerDurationInSeconds - elapsed)
     
-    console.log("🔔 [TIMER_STARTED] Timer sync calculation:", {
+    console.log("🔔 [TIMER_STARTED] Using server timer data:", {
       serverStartTime: new Date(serverStartTime).toISOString(),
       elapsed,
       originalDuration: timerData.timerDurationInSeconds,
       remainingTime
     })
     
-    // Update all timer states from server with calculated remaining time
-    setTimerDuration(remainingTime)
-    setTimerDescription(timerData.sessionGoals || "")
-    setIsTimerRunning(timerData.timerEnabled)
-    setOriginalTimerDuration(timerData.timerDurationInSeconds)
-    
-    // Save timer state to localStorage when timer starts
-    saveTimerToLocalStorage(timerData.timerDurationInSeconds, timerData.sessionGoals || "", timerData.timerEnabled, serverStartTime, timerData.timerDurationInSeconds)
-    
-    // Automatically open timer tab when timer starts for all users
-    setVisibleTabs(prev => new Set([...prev, 'timer']))
-    
-    toast({
-      title: "Timer Started",
-      description: `Study timer started for ${Math.floor(timerData.timerDurationInSeconds / 60)} minutes`,
-    })
-  }, [toast, saveTimerToLocalStorage, setVisibleTabs])
+    // Only start timer if there's time remaining
+    if (remainingTime > 0) {
+      // Update all timer states from server with calculated remaining time
+      setTimerDuration(remainingTime)
+      setTimerDescription(timerData.sessionGoals || "")
+      setIsTimerRunning(timerData.timerEnabled)
+      setOriginalTimerDuration(timerData.timerDurationInSeconds)
+      
+      // Save timer state to localStorage when timer starts
+      saveTimerToLocalStorage(timerData.timerDurationInSeconds, timerData.sessionGoals || "", timerData.timerEnabled, serverStartTime, timerData.timerDurationInSeconds)
+      
+      // Automatically open timer tab when timer starts for all users
+      setVisibleTabs(prev => new Set([...prev, 'timer']))
+      
+      toast({
+        title: "Timer Started",
+        description: `Study timer started for ${Math.floor(timerData.timerDurationInSeconds / 60)} minutes`,
+      })
+    } else {
+      console.log("🛑 [TIMER_STARTED] Server timer has no remaining time, not starting")
+      clearTimerFromLocalStorage()
+    }
+  }, [toast, saveTimerToLocalStorage, setVisibleTabs, validateTimerFromLocalStorage, clearTimerFromLocalStorage])
 
   // Function to handle timer stopped event from server
   const handleTimerStoppedFromServer = useCallback((timerData: { 
@@ -849,6 +1045,101 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
 
   
 
+  // Connection monitoring and recovery - provides user feedback for connection state
+  const connectionLostRef = useRef(false)
+  const reconnectAttemptRef = useRef(0)
+  const maxReconnectAttempts = 5
+  
+  useEffect(() => {
+    if (!user || !roomCode) return
+
+    if (isConnected) {
+      // Connection restored
+      if (connectionLostRef.current) {
+        console.log("🔄 [CONNECTION] Connection restored, fetching room data")
+        connectionLostRef.current = false
+        reconnectAttemptRef.current = 0
+        
+        // Preserve timer state during reconnection
+        const existingTimerData = validateTimerFromLocalStorage(true)
+        if (existingTimerData && existingTimerData.isRunning) {
+          console.log("🔄 [CONNECTION] Preserving timer state during reconnection:", {
+            description: existingTimerData.description,
+            startTime: new Date(existingTimerData.startTime).toISOString(),
+            originalDuration: existingTimerData.originalDuration
+          })
+          
+          // Calculate remaining time
+          const elapsed = Math.floor((Date.now() - existingTimerData.startTime) / 1000)
+          const remaining = Math.max(0, existingTimerData.originalDuration - elapsed)
+          
+          if (remaining > 0) {
+            // Timer is still running, preserve its state
+            setTimerDuration(remaining)
+            setTimerDescription(existingTimerData.description || "")
+            setIsTimerRunning(true)
+            setOriginalTimerDuration(existingTimerData.originalDuration)
+            console.log("🔄 [CONNECTION] Timer state preserved with remaining time:", remaining)
+          } else {
+            // Timer has finished during disconnection
+            console.log("🛑 [CONNECTION] Timer finished during disconnection, cleaning up")
+            clearTimerFromLocalStorage()
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+          }
+        }
+        
+        // Refetch room data after reconnection immediately
+        fetchRoomMembers()
+        fetchRoomMessages()
+        
+        toast({
+          title: "Connection Restored",
+          description: "Successfully reconnected to the room",
+        })
+      }
+    } else {
+      // Connection lost
+      if (!connectionLostRef.current) {
+        console.log("⚠️ [CONNECTION] Connection lost, will attempt to reconnect")
+        connectionLostRef.current = true
+        
+        toast({
+          title: "Connection Lost", 
+          description: "Attempting to reconnect...",
+          variant: "destructive",
+        })
+      }
+      
+      // Automatic reconnection: Attempts to reconnect when issues are detected - MUCH FASTER
+      const attemptReconnect = () => {
+        if (reconnectAttemptRef.current < maxReconnectAttempts) {
+          reconnectAttemptRef.current++
+          console.log(`🔄 [CONNECTION] IMMEDIATE reconnection attempt ${reconnectAttemptRef.current}/${maxReconnectAttempts}`)
+          
+          // Immediate reconnection - no delay
+          if (!isConnected && user && roomCode) {
+            forceReconnect()
+          }
+        } else {
+          console.log("❌ [CONNECTION] Max reconnection attempts reached")
+          toast({
+            title: "Connection Failed",
+            description: "Unable to reconnect. Please refresh the page.",
+            variant: "destructive",
+          })
+        }
+      }
+      
+      // Start reconnection attempts immediately - no delay
+      if (connectionLostRef.current && reconnectAttemptRef.current === 0) {
+        attemptReconnect()
+      }
+    }
+  }, [isConnected, user, roomCode, forceReconnect, fetchRoomMembers, fetchRoomMessages, toast])
+
   // Effect to update host status whenever players or user changes
   useEffect(() => {
     console.log(`[Host Effect] Checking host status. Loading: ${loading}, User: ${user?.name}, Players: ${players.length}`);
@@ -876,7 +1167,14 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
   }, [players, user, loading]); // Include players in dependencies
 
   useEffect(() => {
-    if (loading || !user || !roomCode || !stompClient) {
+    if (loading || !user || !roomCode || !stompClient || !isConnected) {
+      console.log("🔄 [STOMP_SETUP] Waiting for prerequisites:", {
+        loading,
+        hasUser: !!user,
+        hasRoomCode: !!roomCode,
+        hasStompClient: !!stompClient,
+        isConnected
+      })
       return
     }
 
@@ -922,12 +1220,20 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
         subscriptionRef.current = null
         console.log("Unsubscribed from STOMP topic.")
       }
+      
+      // IMPORTANT: Do NOT clear timer localStorage on component unmount
+      // Timer should persist across reconnections and only be cleared when:
+      // 1. Timer actually finishes (handled in timer sync logic)
+      // 2. Timer is stopped by host (handled in server events)
+      // 3. User manually leaves room (handled in leaveRoom function)
+      console.log("🔄 [COMPONENT_UNMOUNT] Component unmounting, preserving timer state for reconnection")
     }
   }, [
     user,
     loading,
     roomCode,
     stompClient,
+    isConnected,
     subscribeToTopic,
     unsubscribeFromTopic,
     handleRoomMessage,
@@ -984,6 +1290,28 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
                         console.log("✅ Successfully auto-rejoined room after reload");
                         setNeedsRejoin(false);
                         
+                        // IMPORTANT: Restore timer state from localStorage after successful rejoin
+                        const existingTimerData = validateTimerFromLocalStorage(true);
+                        if (existingTimerData && existingTimerData.isRunning) {
+                          const elapsed = Math.floor((Date.now() - existingTimerData.startTime) / 1000);
+                          const remaining = Math.max(0, existingTimerData.originalDuration - elapsed);
+                          
+                          if (remaining > 0) {
+                            console.log("✅ [PAGE_RELOAD] Timer state restored with remaining time:", remaining);
+                            setTimerDuration(remaining);
+                            setTimerDescription(existingTimerData.description || "");
+                            setIsTimerRunning(true);
+                            setOriginalTimerDuration(existingTimerData.originalDuration);
+                            
+                            // Automatically open timer tab when timer is restored
+                            setVisibleTabs(prev => new Set([...prev, 'timer']));
+                          } else {
+                            console.log("🛑 [PAGE_RELOAD] Timer finished during reload, cleaning up");
+                            clearTimerFromLocalStorage();
+                            setIsTimerRunning(false);
+                          }
+                        }
+                        
                         // Robustly wait for STOMP connection and fetch members
                         const waitForStompAndFetch = async (retries = 0, maxRetries = 10) => {
                             if (retries >= maxRetries) {
@@ -1025,7 +1353,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       checkPageReload();
     }
     
-  }, [roomCode, toast, user, loading, router, stompClient, fetchRoomMembers])
+  }, [roomCode, toast, user, loading, router, stompClient, fetchRoomMembers, validateTimerFromLocalStorage, clearTimerFromLocalStorage, setVisibleTabs])
   
   // This new useEffect handles leaving the room automatically when the user closes the tab.
   useEffect(() => {
@@ -1033,17 +1361,27 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       // Set a flag in sessionStorage to indicate a reload is in progress
       // This flag will be checked by the next page load's useEffect
       sessionStorage.setItem(`reloading_${roomCode}`, 'true');
-
-      // This part is for when the user closes the tab/browser, not for reloads
-      // We rely on the browser's cleanup and the server's potential WebSocket disconnect handler
-      // Or for a more robust solution, use sendBeacon as in the modified leaveRoom function.
+      
+      // IMPORTANT: Do NOT clear timer localStorage on page refresh
+      // Timer should persist across page reloads
+      console.log("🔄 [BEFOREUNLOAD] Page refresh detected, preserving timer state");
     };
     
     const handleUnload = () => {
-        // This is a more reliable place for leave actions if `beforeunload` is tricky
-        if (user && hasManuallyLeftRef.current === false) {
-             console.log("🚪 [UNLOAD] Tab/window closing, calling leaveRoom");
+        // Only clean up if this is NOT a page reload and user manually left
+        const isPageReload = sessionStorage.getItem(`reloading_${roomCode}`) === 'true';
+        
+        if (user && hasManuallyLeftRef.current === false && !isPageReload) {
+             console.log("🚪 [UNLOAD] Tab/window closing (not reload), calling leaveRoom");
+             // Only clean up timer localStorage if user is actually leaving (not refreshing)
+             console.log("🧹 [UNLOAD] Cleaning up timer localStorage before leaving");
+             clearTimerFromLocalStorage();
+             
+             // Mark as not a reload to ensure leaveRoom doesn't prevent cleanup
+             isReload.current = false;
              leaveRoom();
+        } else if (isPageReload) {
+          console.log("🔄 [UNLOAD] Page reload detected, preserving timer state");
         }
     };
 
@@ -1055,7 +1393,7 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
       window.removeEventListener('beforeunload', handleBeforeUnload);
       window.removeEventListener('unload', handleUnload);
     };
-  }, [leaveRoom, user, roomCode]); 
+  }, [leaveRoom, user, roomCode, clearTimerFromLocalStorage]); 
 
   
 
@@ -1304,6 +1642,10 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
     hasManuallyLeftRef.current = true; // Mark as manual leave
     setHasLeftRoom(true); 
     
+    // Clean up timer localStorage before leaving room to prevent confusion
+    console.log("🧹 [LEAVE_ROOM] Cleaning up timer localStorage before leaving room");
+    clearTimerFromLocalStorage();
+    
     // Use the manual leave function for proper API call
     const success = await manualLeaveRoom();
     
@@ -1429,7 +1771,59 @@ const fetchLectures = async () => {
     }
   }
 
+  const getGoalsFromServer = async () => {
+    if (!user || !roomCode) {
+      console.warn("Cannot fetch goals: missing user or room code")
+      return
+    }
 
+    console.log("📡 [FETCH_GOALS] Fetching goals from server", { roomCode, user: user.name });
+
+    try {
+      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/all"), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.access_token}`,
+        },
+        body: JSON.stringify({ roomJoinCode: roomCode }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log("✅ [FETCH_GOALS] Goals fetched successfully:", data);
+        
+        // Transform the goals data to match the expected format
+        const transformedGoals = data.map((goal: any) => ({
+          id: goal.id || "",
+          text: goal.goalTitle || goal.title || "",
+          done: goal.done || false,
+          duration: {
+            hours: goal.hours || 0,
+            minutes: goal.minutes || 0
+          }
+        }));
+        
+        setSessionGoals(transformedGoals);
+        console.log("📝 [FETCH_GOALS] Updated session goals:", transformedGoals);
+      } else {
+        const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+        console.error("❌ [FETCH_GOALS] Failed to fetch goals:", errorData);
+        toast({
+          title: "Error",
+          description: `Failed to fetch goals: ${errorData.message}`,
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error("❌ [FETCH_GOALS] Network error:", error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch goals. Please check your connection.",
+        variant: "destructive"
+      });
+    }
+  }
 
   // Function to rejoin the room (similar to join page logic)
   const handleRejoinRoom = async () => {
@@ -1700,15 +2094,25 @@ const fetchLectures = async () => {
     }
   }, [timerDuration, timerDescription, isTimerRunning, saveTimerToLocalStorage])
 
-  // Debug useEffect to track timer state changes
+  // Debug effect to track timer state changes and identify what's causing resets
   useEffect(() => {
-    console.log("🎮 [TIMER_STATE] Timer state changed:", {
+    console.log("🎮 [TIMER_STATE_DEBUG] Timer state changed:", {
       isTimerRunning,
       timerDuration,
       timerDescription,
-      showTimer
+      originalTimerDuration,
+      showTimer,
+      user: user?.name,
+      roomCode,
+      timestamp: new Date().toISOString()
     })
-  }, [isTimerRunning, timerDuration, timerDescription, showTimer])
+    
+    // Log stack trace when timer is stopped unexpectedly
+    if (!isTimerRunning && timerDuration === 25 * 60 && timerDescription === "") {
+      console.log("🚨 [TIMER_RESET_DETECTED] Timer was reset to default state");
+      console.trace("Timer reset stack trace");
+    }
+  }, [isTimerRunning, timerDuration, timerDescription, originalTimerDuration, showTimer, user, roomCode])
 
   // Debug effect to track timer duration changes
   useEffect(() => {
@@ -1721,50 +2125,113 @@ const fetchLectures = async () => {
     })
   }, [timerDuration, isHost, user])
 
-  // Effect to check and sync timer state on component mount
+  // Enhanced effect to restore timer state on mount - runs early to prevent timer loss
   useEffect(() => {
     if (typeof window !== "undefined" && roomCode) {
+      console.log("🔄 [TIMER_EARLY_RESTORE] Attempting early timer state restoration");
+      
       try {
-        const saved = localStorage.getItem(`timer_${roomCode}`)
+        const saved = localStorage.getItem(`timer_${roomCode}`);
         if (saved) {
-          const timerData = JSON.parse(saved)
+          const timerData = JSON.parse(saved);
           
-          // If timer is running, ensure we have the correct remaining time
-          if (timerData.isRunning && timerData.startTime) {
-            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-            const remaining = Math.max(0, timerData.duration - elapsed)
+          // Validate basic timer data structure
+          if (timerData.isRunning && timerData.startTime && timerData.originalDuration) {
+            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000);
+            const remaining = Math.max(0, timerData.originalDuration - elapsed);
             
-            console.log("🔄 [COMPONENT_MOUNT] Syncing timer on mount:", {
-              originalDuration: timerData.duration,
-              elapsed,
-              remaining,
-              currentTimerDuration: timerDuration,
-              startTime: new Date(timerData.startTime).toISOString(),
-              savedOriginalDuration: timerData.originalDuration
-            })
-            
-            // Update original duration if we have it from localStorage
-            if (timerData.originalDuration && timerData.originalDuration !== originalTimerDuration) {
-              console.log("🔄 [COMPONENT_MOUNT] Updating original duration from localStorage:", timerData.originalDuration)
-              setOriginalTimerDuration(timerData.originalDuration)
-            }
-            
-            // Only update if the calculated remaining time is different from current state
-            if (Math.abs(remaining - timerDuration) > 1) { // Allow 1 second tolerance
-              console.log("🔄 [COMPONENT_MOUNT] Updating timer duration to sync with localStorage")
-              setTimerDuration(remaining)
+            if (remaining > 0) {
+              console.log("✅ [TIMER_EARLY_RESTORE] Restoring timer state immediately:", {
+                remaining,
+                description: timerData.description,
+                originalDuration: timerData.originalDuration
+              });
+              
+              // Restore timer state immediately to prevent loss
+              setTimerDuration(remaining);
+              setTimerDescription(timerData.description || "");
+              setIsTimerRunning(true);
+              setOriginalTimerDuration(timerData.originalDuration);
+              
+              // Open timer tab immediately
+              setVisibleTabs(prev => new Set([...prev, 'timer']));
+            } else {
+              console.log("🛑 [TIMER_EARLY_RESTORE] Timer finished, cleaning up");
+              localStorage.removeItem(`timer_${roomCode}`);
             }
           }
         }
       } catch (e) {
-        console.warn("Failed to sync timer on mount:", e)
+        console.warn("❌ [TIMER_EARLY_RESTORE] Failed to restore timer state:", e);
       }
     }
-  }, [roomCode]) // Only run once on mount
+  }, [roomCode]); // Only depends on roomCode to run as early as possible
+
+  // Effect to check and sync timer state on component mount
+  useEffect(() => {
+    if (typeof window !== "undefined" && roomCode && !isTimerInitialized.current) {
+      console.log("🔄 [TIMER_INIT] Checking timer state on component mount")
+      
+      // Skip user validation during initialization since user context may not be ready
+      const timerData = validateTimerFromLocalStorage(true)
+      
+      if (timerData) {
+        console.log("🔄 [TIMER_INIT] Found existing timer data:", timerData)
+        
+        if (timerData.isRunning && timerData.startTime) {
+          // Timer is running, calculate remaining time
+          const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
+          const remaining = Math.max(0, timerData.originalDuration - elapsed)
+          
+          console.log("🔄 [TIMER_INIT] Timer running calculation:", {
+            elapsed,
+            originalDuration: timerData.originalDuration,
+            remaining,
+            startTime: new Date(timerData.startTime).toISOString()
+          })
+          
+          if (remaining > 0) {
+            // Timer is still running, restore its state
+            console.log("✅ [TIMER_INIT] Restoring running timer state")
+            setTimerDuration(remaining)
+            setTimerDescription(timerData.description || "")
+            setIsTimerRunning(true)
+            setOriginalTimerDuration(timerData.originalDuration)
+            
+            // Ensure timer tab is visible when timer is restored
+            setVisibleTabs(prev => new Set([...prev, 'timer']))
+            
+            console.log("✅ [TIMER_INIT] Timer state restored with remaining time:", remaining)
+          } else {
+            // Timer has finished, clean up
+            console.log("� [TIMER_INIT] Timer has finished, cleaning up")
+            clearTimerFromLocalStorage()
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+          }
+        } else if (!timerData.isRunning) {
+          // Timer is not running, set up from saved data but don't start it
+          setTimerDescription(timerData.description || "")
+          if (timerData.originalDuration) {
+            setOriginalTimerDuration(timerData.originalDuration)
+          }
+          console.log("🔄 [TIMER_INIT] Timer not running, loaded description and duration")
+        }
+      } else {
+        console.log("🔄 [TIMER_INIT] No existing timer data found")
+      }
+      
+      // Mark timer as initialized to prevent further initialization attempts
+      isTimerInitialized.current = true
+    }
+  }, [roomCode, validateTimerFromLocalStorage, clearTimerFromLocalStorage, toast, setVisibleTabs])
 
   // Effect to periodically sync timer for running timers
   useEffect(() => {
-    if (!isTimerRunning || isCleaningUpTimer.current) return
+    // Wait for timer initialization to complete before starting sync
+    if (!isTimerRunning || isCleaningUpTimer.current || !isTimerInitialized.current) return
 
     const syncInterval = setInterval(() => {
       // Double-check the cleanup flag inside the interval
@@ -1774,53 +2241,135 @@ const fetchLectures = async () => {
       }
       
       if (typeof window !== "undefined" && roomCode) {
-        try {
-          const saved = localStorage.getItem(`timer_${roomCode}`)
-          if (!saved) {
-            // If localStorage is cleared, timer was stopped
-            console.log("🛑 [TIMER_SYNC] No timer data in localStorage, timer was stopped")
-            if (isTimerRunning) {
-              setIsTimerRunning(false)
-            }
-            return
+        // Use validation function to get timer data
+        const timerData = validateTimerFromLocalStorage()
+        
+        if (!timerData) {
+          // If validation failed or no timer data, timer was stopped
+          console.log("🛑 [TIMER_SYNC] No valid timer data, timer was stopped")
+          if (isTimerRunning) {
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+          }
+          return
+        }
+        
+        if (timerData.isRunning && timerData.startTime) {
+          const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
+          const remaining = Math.max(0, timerData.originalDuration - elapsed)
+          
+          // Only update if there's a significant difference (more than 2 seconds)
+          if (Math.abs(remaining - timerDuration) > 2) {
+            console.log("🔄 [TIMER_SYNC] Periodic sync updating timer duration:", {
+              current: timerDuration,
+              calculated: remaining,
+              difference: Math.abs(remaining - timerDuration)
+            })
+            setTimerDuration(remaining)
           }
           
-          const timerData = JSON.parse(saved)
-          
-          if (timerData.isRunning && timerData.startTime) {
-            const elapsed = Math.floor((Date.now() - timerData.startTime) / 1000)
-            const remaining = Math.max(0, timerData.duration - elapsed)
+          // If timer has finished, stop it and clean up localStorage
+          if (remaining <= 0 && isTimerRunning) {
+            console.log("🛑 [TIMER_SYNC] Timer finished during sync - cleaning up completely")
             
-            // Only update if there's a significant difference (more than 2 seconds)
-            if (Math.abs(remaining - timerDuration) > 2) {
-              console.log("🔄 [TIMER_SYNC] Periodic sync updating timer duration:", {
-                current: timerDuration,
-                calculated: remaining,
-                difference: Math.abs(remaining - timerDuration)
-              })
-              setTimerDuration(remaining)
-            }
+            // Set cleanup flag to prevent race conditions
+            isCleaningUpTimer.current = true
             
-            // If timer has finished, stop it
-            if (remaining <= 0 && isTimerRunning) {
-              console.log("🛑 [TIMER_SYNC] Timer finished during sync")
-              setIsTimerRunning(false)
-              clearTimerFromLocalStorage()
-            }
-          } else if (!timerData.isRunning) {
-            // Timer is marked as not running in localStorage
-            console.log("🛑 [TIMER_SYNC] Timer marked as stopped in localStorage")
-            if (isTimerRunning) {
-              setIsTimerRunning(false)
-            }
+            // Stop timer and reset all states
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+            
+            // Clear localStorage
+            clearTimerFromLocalStorage()
+            
+            // Show timer finished notification
+            toast({
+              title: "Timer Finished",
+              description: "Study timer has completed!",
+            })
+            
+            // Reset cleanup flag after a short delay
+            setTimeout(() => {
+              isCleaningUpTimer.current = false
+            }, 1000)
           }
-        } catch (e) {
-          console.warn("Failed to sync timer during periodic check:", e)
+        } else if (!timerData.isRunning) {
+          // Timer is marked as not running in localStorage
+          console.log("🛑 [TIMER_SYNC] Timer marked as stopped in localStorage")
+          if (isTimerRunning) {
+            setIsTimerRunning(false)
+            setTimerDuration(25 * 60)
+            setTimerDescription("")
+            setOriginalTimerDuration(25 * 60)
+          }
         }
       }
     }, 1000) // Check every second
 
-    return () => clearInterval(syncInterval)  }, [isTimerRunning, timerDuration, roomCode, clearTimerFromLocalStorage])
+    return () => clearInterval(syncInterval)
+  }, [isTimerRunning, timerDuration, roomCode, clearTimerFromLocalStorage, validateTimerFromLocalStorage, toast])
+
+  // Effect to handle tab focus/visibility changes - clean up stale timer data
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden && typeof window !== "undefined" && roomCode && isTimerInitialized.current) {
+        console.log("👁️ [TAB_FOCUS] Tab became visible, validating timer data");
+        
+        // Only validate after a short delay to avoid interfering with initialization
+        setTimeout(() => {
+          // Only validate timer data if user is available to avoid false positives
+          if (user?.name) {
+            const timerData = validateTimerFromLocalStorage()
+            
+            // If validation failed, ensure timer state is reset
+            if (!timerData && isTimerRunning) {
+              console.log("🧹 [TAB_FOCUS] No valid timer data found but timer is running, stopping timer");
+              setIsTimerRunning(false)
+              setTimerDuration(25 * 60)
+              setTimerDescription("")
+              setOriginalTimerDuration(25 * 60)
+            }
+          } else {
+            console.log("👁️ [TAB_FOCUS] User not available, skipping validation");
+          }
+        }, 500) // Wait 500ms to avoid race conditions with initialization
+      }
+    }
+
+    const handleFocus = () => {
+      if (typeof window !== "undefined" && roomCode && isTimerInitialized.current) {
+        console.log("🎯 [WINDOW_FOCUS] Window focused, validating timer data");
+          // Only validate after a short delay to avoid interfering with initialization
+        setTimeout(() => {
+          // Only validate timer data if user is available to avoid false positives
+          if (user?.name) {
+            const timerData = validateTimerFromLocalStorage()
+            if (!timerData && isTimerRunning) {
+              console.log("🧹 [WINDOW_FOCUS] Cleaning up invalid timer state");
+              setIsTimerRunning(false)
+              setTimerDuration(25 * 60)
+              setTimerDescription("")
+              setOriginalTimerDuration(25 * 60)
+            }
+          } else {
+            console.log("🎯 [WINDOW_FOCUS] User not available, skipping validation");
+          }
+        }, 500) // Wait 500ms to avoid race conditions with initialization
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('focus', handleFocus)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('focus', handleFocus)
+    }
+  }, [roomCode, isTimerRunning, validateTimerFromLocalStorage])
 
   // Function to add study time via API
   const addStudyTime = async (timeInMinutes: number, sessionType: 'study' | 'practice') => {
@@ -1944,16 +2493,19 @@ const fetchLectures = async () => {
       if (response.ok) {
         console.log("✅ [TOGGLE_GOAL] Goal toggled successfully on server");
         
-        // Refetch goals from server to ensure UI is in sync
-       // await getGoalsFromServer();
+        // Optimistically update the local state
+        setSessionGoals(prevGoals => 
+          prevGoals.map(goal => 
+            goal.id === goalId ? { ...goal, done: !goal.done } : goal
+          )
+        );
         
-       
       } else {
         const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
         console.error("❌ [TOGGLE_GOAL] Failed to toggle goal:", errorData);
         toast({
           title: "Error",
-          description: `Failed to update goal: ${errorData.message}`,
+          description: `Failed to toggle goal: ${errorData.message}`,
           variant: "destructive"
         });
       }
@@ -1961,64 +2513,7 @@ const fetchLectures = async () => {
       console.error("❌ [TOGGLE_GOAL] Network error:", error);
       toast({
         title: "Error",
-        description: "Failed to update goal. Please check your connection.",
-        variant: "destructive"
-      });
-    }
-  }
-
-
-
-  const getGoalsFromServer = async () => {
-    if (!user || !roomCode) {
-      console.warn("⚠️ [FETCH_GOALS] Cannot fetch goals: missing user or room code");
-      return;
-    }
-
-    console.log("📡 [FETCH_GOALS] Fetching goals from server", { roomCode, user: user.name });
-
-    try {
-      const response = await fetch(getApiUrl("api/v1/squadgames/rooms/goals/all"), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${user.access_token}`,
-        },
-        body: JSON.stringify({ roomJoinCode: roomCode }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        console.log("✅ [FETCH_GOALS] Goals fetched successfully:", data);
-        
-        if (data && Array.isArray(data)) {
-          const sessionGoals = data.map((goal: any) => ({
-            id: goal.id,
-            text: goal.goalTitle || goal.title || "",
-            done: goal.done || false,
-            duration: {
-              hours: goal.hours || 0,
-              minutes: goal.minutes || 0
-            }
-          }));
-          
-          setSessionGoals(sessionGoals);
-          console.log("📝 [FETCH_GOALS] Updated session goals:", sessionGoals);
-        }
-      } else {
-        const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
-        console.error("❌ [FETCH_GOALS] Failed to fetch goals:", errorData);
-        toast({
-          title: "Error",
-          description: `Failed to fetch goals: ${errorData.message}`,
-          variant: "destructive"
-        });
-      }
-    } catch (error) {
-      console.error("❌ [FETCH_GOALS] Network error:", error);
-      toast({
-        title: "Error",
-        description: "Failed to fetch goals. Please check your connection.",
+        description: "Failed to toggle goal. Please check your connection.",
         variant: "destructive"
       });
     }
@@ -2210,6 +2705,47 @@ const fetchLectures = async () => {
       <div className="lobby-content-wrapper">
         <div className="p-4 max-w-6xl w-full mx-auto flex flex-col items-center">
           <div className="w-full space-y-4">
+            {/* Connection Status Indicator - Shows when reconnecting with a retry button */}
+            {!isConnected && (
+              <div className="w-full max-w-4xl mx-auto">
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      {/* Visual feedback: Amber indicator with pulsing animation during reconnection */}
+                      <div className="h-2 w-2 bg-amber-500 rounded-full animate-pulse"></div>
+                      <span className="text-sm text-amber-700 font-medium">
+                        {connectionLostRef.current 
+                          ? `Reconnecting... (Attempt ${reconnectAttemptRef.current}/${maxReconnectAttempts})`
+                          : "Connecting to room..."
+                        }
+                      </span>
+                    </div>
+                    {/* Manual reconnection: Users can force reconnect if automatic attempts fail */}
+                    {connectionLostRef.current && reconnectAttemptRef.current >= maxReconnectAttempts && (
+                      <button
+                        onClick={() => {
+                          reconnectAttemptRef.current = 0
+                          connectionLostRef.current = false
+                          forceReconnect()
+                        }}
+                        className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-1 rounded text-sm font-medium transition-colors"
+                      >
+                        Retry Connection
+                      </button>
+                    )}
+                    {!connectionLostRef.current && (
+                      <button
+                        onClick={forceReconnect}
+                        className="text-xs bg-amber-100 hover:bg-amber-200 text-amber-700 px-2 py-1 rounded transition-colors"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            
             {/* Main Content Grid */}
             <div className="max-w-4xl w-full mx-auto">
               {/* Main Content Area - Tab System */}
@@ -2237,7 +2773,7 @@ const fetchLectures = async () => {
                             <div className="space-y-2">
                               <div className="flex items-center gap-2 mb-2">
                                 <Users className="h-5 w-5 text-blue-500" />
-                                <h3 className="font-semibold">Participants ({players.length}/8)</h3>
+                                <h3 className="font-semibold">Participants ({players.length})</h3>
                               </div>
                               <PlayerList players={players} currentUsername={username} />
                             </div>
@@ -2289,9 +2825,14 @@ const fetchLectures = async () => {
                                     size="icon"
                                     className="h-14 w-14 bg-green-500 hover:bg-green-600 text-white rounded-2xl"
                                     onClick={() => setShowSessionList(true)}
+                                    title="Start Practice Session - Start a quiz or practice session with generated questions"
                                   >
                                     <Play className="h-7 w-7" />
                                   </Button>
+                                  {/* Custom tooltip */}
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Start Practice Session
+                                  </div>
                                 </div>
                               )}
 
@@ -2300,6 +2841,10 @@ const fetchLectures = async () => {
                                   lectures={lectures.map(l => ({ ...l, id: String(l.lectureId) }))}
                                   onLectureSelect={handleLectureSelect}
                                 />
+                                {/* Custom tooltip */}
+                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                  Study Materials
+                                </div>
                               </div>
 
                               <div className="relative group">
@@ -2308,9 +2853,14 @@ const fetchLectures = async () => {
                                   variant="outline"
                                   className="h-14 w-14 border-2 border-purple-400/50 text-purple-600 hover:bg-purple-50 hover:border-purple-500 rounded-2xl"
                                   onClick={() => toggleTab('timer')}
+                                  title="Study Timer - Set and manage focus timer for study sessions"
                                 >
                                   <Timer className="h-7 w-7" />
                                 </Button>
+                                {/* Custom tooltip */}
+                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                  Study Timer
+                                </div>
                               </div>
 
                               {/* Study Goal Button */}
@@ -2321,9 +2871,14 @@ const fetchLectures = async () => {
                                     variant="outline"
                                     className="h-14 w-14 border-2 border-amber-400/50 text-amber-600 hover:bg-amber-50 hover:border-amber-500 rounded-2xl"
                                     onClick={handleOpenStudyGoal}
+                                    title="Study Goal - Set daily study hour goal for the session"
                                   >
                                     <Target className="h-7 w-7" />
                                   </Button>
+                                  {/* Custom tooltip */}
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Study Goal
+                                  </div>
                                 </div>
                               )}
 
@@ -2336,6 +2891,7 @@ const fetchLectures = async () => {
                                     className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
                                     onClick={() => setShowUploadModal(true)}
                                     disabled={isGenerating}
+                                    title="Upload PDF - Upload PDF files to generate study materials and practice questions"
                                   >
                                     {isGenerating ? (
                                       <div className="animate-spin h-7 w-7 border-2 border-blue-600 border-t-transparent rounded-full" />
@@ -2343,6 +2899,10 @@ const fetchLectures = async () => {
                                       <Upload className="h-7 w-7" />
                                     )}
                                   </Button>
+                                  {/* Custom tooltip */}
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Upload PDF
+                                  </div>
                                   {/* Upload progress indicator */}
                                   {isGenerating && (
                                     <div className="absolute -top-1 -right-1 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center animate-pulse">
@@ -2373,6 +2933,7 @@ const fetchLectures = async () => {
                                     className="h-14 w-14 border-2 border-blue-400/50 text-blue-600 hover:bg-blue-50 hover:border-blue-500 rounded-2xl"
                                     onClick={setNewHost}
                                     disabled={isRequestingHost}
+                                    title="Request Host - Request to become the host of this study session"
                                   >
                                     {isRequestingHost ? (
                                       <div className="h-7 w-7">...</div>
@@ -2380,6 +2941,10 @@ const fetchLectures = async () => {
                                       <Crown className="h-7 w-7" />
                                     )}
                                   </Button>
+                                  {/* Custom tooltip */}
+                                  <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                    Request Host
+                                  </div>
                                 </div>
                               )}
 
@@ -2390,9 +2955,14 @@ const fetchLectures = async () => {
                                   variant="destructive"
                                   className="h-14 w-14 bg-red-500 hover:bg-red-600 rounded-2xl"
                                   onClick={handleLeaveRoom}
+                                  title="Leave Session - Exit the current study session"
                                 >
                                   <LogOut className="h-7 w-7" />
                                 </Button>
+                                {/* Custom tooltip */}
+                                <div className="absolute -top-12 left-1/2 transform -translate-x-1/2 bg-gray-900 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap z-10">
+                                  Leave Session
+                                </div>
                               </div>
                             </div>
 
@@ -2674,11 +3244,21 @@ const fetchLectures = async () => {
                 <span className={`text-xs font-medium mt-1 ${visibleTabs.has('timer') ? 'text-white' : 'text-gray-600'}`}>
                   Timer
                 </span>
-                {/* Timer running indicator */}
+                {/* Timer running indicator and remaining time badge */}
                 {isTimerRunning && (
-                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center animate-pulse">
-                    <div className="w-2 h-2 bg-white rounded-full"></div>
-                  </div>
+                  <>
+                    {currentRemainingTime > 0 ? (
+                      <div className="absolute -top-2 -right-2 bg-purple-600 rounded-lg flex items-center justify-center shadow-lg border-2 border-white px-1 py-0.5">
+                        <span className="text-white text-xs font-bold leading-none whitespace-nowrap">
+                          {formatTime(currentRemainingTime)}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full flex items-center justify-center animate-pulse">
+                        <div className="w-2 h-2 bg-white rounded-full"></div>
+                      </div>
+                    )}
+                  </>
                 )}
               </button>
             </div>
