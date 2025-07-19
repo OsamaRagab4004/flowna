@@ -688,11 +688,14 @@ export default function Lobby({ params }: { params: Promise<{ roomCode: string }
             "Content-Type": "application/json",
             Authorization: `Bearer ${user.access_token}`,
           },
-          body: JSON.stringify({ roomJoinCode: roomCode }),
+          body: JSON.stringify({ roomJoinCode: roomCode, isRejoining: true }),
         });
 
         if (response.ok) {
           console.log("✅ [JOIN_ROOM] Successfully joined room on mount");
+        } else {
+          const errorData = await response.json().catch(() => ({ message: "Unknown error" }));
+          console.error("❌ [JOIN_ROOM] Failed to join room:", response.status, errorData);
         }
       } catch (error) {
         console.error("❌ [JOIN_ROOM] Error joining room on mount:", error);
